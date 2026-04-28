@@ -1,0 +1,328 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { appendAuditLog } from "@/lib/audit";
+import { requireAdmin, getSessionContext } from "@/lib/auth/session";
+import { assertNoTimeOverlap } from "@/lib/events/overlap";
+import { scheduleEventReminder } from "@/lib/reminders/qstash";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+import type { EventRow, EventStatus } from "@/lib/types/database";
+import {
+  approveAndAssignSchema,
+  createEventSchema,
+  updateEventSchema,
+} from "@/lib/validations/events";
+
+export type ActionResult<T = void> =
+  | { ok: true; data?: T }
+  | { ok: false; error: string };
+
+function err(e: unknown): string {
+  return e instanceof Error ? e.message : "Erro desconhecido";
+}
+
+export async function createEvent(
+  raw: unknown,
+): Promise<ActionResult<{ id: string }>> {
+  try {
+    const ctx = await getSessionContext();
+    if (!ctx) return { ok: false, error: "Não autenticado." };
+
+    const parsed = createEventSchema.safeParse(raw);
+    if (!parsed.success) {
+      return { ok: false, error: parsed.error.flatten().formErrors.join(", ") };
+    }
+
+    const supabase = await createSupabaseServerClient();
+    const isAdmin = ctx.profile.role === "admin";
+    const input = parsed.data;
+
+    let status: EventStatus;
+    let collaboratorId: string | null;
+    let assignedAt: string | null = null;
+    let approvedAt: string | null = null;
+    let approvedBy: string | null = null;
+
+    if (!isAdmin) {
+      status = "pending_approval";
+      collaboratorId = null;
+    } else {
+      collaboratorId = input.collaboratorId ?? null;
+      if (collaboratorId) {
+        status = "assigned";
+        assignedAt = new Date().toISOString();
+        approvedBy = ctx.userId;
+        approvedAt = assignedAt;
+      } else {
+        status = input.status ?? "confirmed";
+      }
+    }
+
+    await assertNoTimeOverlap(supabase, {
+      startsAt: input.startsAt,
+      endsAt: input.endsAt,
+      collaboratorId,
+    });
+
+    const { data, error } = await supabase
+      .from("events")
+      .insert({
+        title: input.title ?? "",
+        description: input.description ?? "",
+        client_id: input.clientId,
+        collaborator_id: collaboratorId,
+        created_by: ctx.userId,
+        status,
+        starts_at: input.startsAt,
+        ends_at: input.endsAt,
+        approved_by: approvedBy,
+        approved_at: approvedAt,
+        assigned_at: assignedAt,
+      })
+      .select("id")
+      .single();
+
+    if (error) throw error;
+
+    await appendAuditLog(supabase, {
+      entityType: "event",
+      entityId: data.id,
+      action: "create",
+      metadata: { status, collaboratorId },
+    });
+
+    if (collaboratorId && status === "assigned") {
+      await scheduleEventReminder({
+        eventId: data.id,
+        startsAtIso: input.startsAt,
+      });
+    }
+
+    revalidatePath("/agenda");
+    return { ok: true, data: { id: data.id } };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
+
+export async function updateEvent(raw: unknown): Promise<ActionResult> {
+  try {
+    const ctx = await getSessionContext();
+    const adminCtx = requireAdmin(ctx);
+
+    const parsed = updateEventSchema.safeParse(raw);
+    if (!parsed.success) {
+      return { ok: false, error: parsed.error.flatten().formErrors.join(", ") };
+    }
+
+    const supabase = await createSupabaseServerClient();
+    const { id, ...patch } = parsed.data;
+
+    const { data: existing, error: fetchErr } = await supabase
+      .from("events")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (fetchErr || !existing) {
+      return { ok: false, error: "Evento não encontrado." };
+    }
+
+    const row = existing as EventRow;
+    const startsAt = patch.startsAt ?? row.starts_at;
+    const endsAt = patch.endsAt ?? row.ends_at;
+    const collaboratorId =
+      patch.collaboratorId !== undefined
+        ? patch.collaboratorId
+        : row.collaborator_id;
+
+    await assertNoTimeOverlap(supabase, {
+      startsAt,
+      endsAt,
+      collaboratorId,
+      excludeEventId: id,
+    });
+
+    const nextStatus = patch.status ?? row.status;
+    const updates: Record<string, unknown> = {};
+
+    if (patch.title !== undefined) updates.title = patch.title;
+    if (patch.description !== undefined) updates.description = patch.description;
+    if (patch.clientId !== undefined) updates.client_id = patch.clientId;
+    if (patch.collaboratorId !== undefined) {
+      updates.collaborator_id = patch.collaboratorId;
+      if (patch.collaboratorId && !row.assigned_at) {
+        updates.assigned_at = new Date().toISOString();
+      }
+    }
+    if (patch.startsAt !== undefined) updates.starts_at = patch.startsAt;
+    if (patch.endsAt !== undefined) updates.ends_at = patch.endsAt;
+    if (patch.status !== undefined) updates.status = patch.status;
+
+    if (nextStatus === "assigned" && !row.approved_at) {
+      updates.approved_by = adminCtx.userId;
+      updates.approved_at = new Date().toISOString();
+    }
+
+    const { error } = await supabase.from("events").update(updates).eq("id", id);
+
+    if (error) throw error;
+
+    await appendAuditLog(supabase, {
+      entityType: "event",
+      entityId: id,
+      action: "update",
+      metadata: { before: row, patch },
+    });
+
+    if (
+      patch.startsAt !== undefined ||
+      (row.collaborator_id === null && collaboratorId)
+    ) {
+      if (collaboratorId && nextStatus === "assigned") {
+        await scheduleEventReminder({ eventId: id, startsAtIso: startsAt });
+      }
+    }
+
+    revalidatePath("/agenda");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
+
+export async function approveAndAssignEvent(
+  raw: unknown,
+): Promise<ActionResult> {
+  try {
+    const ctx = await getSessionContext();
+    requireAdmin(ctx);
+
+    const parsed = approveAndAssignSchema.safeParse(raw);
+    if (!parsed.success) {
+      return { ok: false, error: parsed.error.flatten().formErrors.join(", ") };
+    }
+
+    const supabase = await createSupabaseServerClient();
+    const { eventId, collaboratorId } = parsed.data;
+
+    const { data: existing, error: fetchErr } = await supabase
+      .from("events")
+      .select("*")
+      .eq("id", eventId)
+      .single();
+
+    if (fetchErr || !existing) {
+      return { ok: false, error: "Evento não encontrado." };
+    }
+
+    const row = existing as EventRow;
+    if (row.status !== "pending_approval") {
+      return { ok: false, error: "Apenas eventos pendentes podem ser aprovados." };
+    }
+
+    await assertNoTimeOverlap(supabase, {
+      startsAt: row.starts_at,
+      endsAt: row.ends_at,
+      collaboratorId,
+      excludeEventId: eventId,
+    });
+
+    const now = new Date().toISOString();
+    const { error } = await supabase
+      .from("events")
+      .update({
+        status: "assigned",
+        collaborator_id: collaboratorId,
+        approved_by: ctx!.userId,
+        approved_at: now,
+        assigned_at: now,
+      })
+      .eq("id", eventId);
+
+    if (error) throw error;
+
+    await appendAuditLog(supabase, {
+      entityType: "event",
+      entityId: eventId,
+      action: "approve_assign",
+      metadata: { collaboratorId },
+    });
+
+    await scheduleEventReminder({
+      eventId,
+      startsAtIso: row.starts_at,
+    });
+
+    revalidatePath("/agenda");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
+
+export async function rejectEvent(eventId: string): Promise<ActionResult> {
+  try {
+    const ctx = await getSessionContext();
+    requireAdmin(ctx);
+
+    const supabase = await createSupabaseServerClient();
+    const { error } = await supabase
+      .from("events")
+      .update({ status: "rejected" })
+      .eq("id", eventId);
+
+    if (error) throw error;
+
+    await appendAuditLog(supabase, {
+      entityType: "event",
+      entityId: eventId,
+      action: "reject",
+      metadata: {},
+    });
+
+    revalidatePath("/agenda");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
+
+export async function listEventsForUser(params?: {
+  collaboratorFilterId?: string | null;
+}): Promise<ActionResult<EventRow[]>> {
+  try {
+    const ctx = await getSessionContext();
+    if (!ctx) return { ok: false, error: "Não autenticado." };
+
+    const supabase = await createSupabaseServerClient();
+
+    if (ctx.profile.role === "collaborator") {
+      const { data, error } = await supabase
+        .from("events")
+        .select("*, clients(full_name, document_normalized)")
+        .order("starts_at");
+      if (error) throw error;
+      const rows = (data ?? []) as EventRow[];
+      const filtered = rows.filter(
+        (e) =>
+          e.collaborator_id === ctx.userId ||
+          (e.created_by === ctx.userId && e.status === "pending_approval"),
+      );
+      return { ok: true, data: filtered };
+    }
+
+    let q = supabase
+      .from("events")
+      .select("*, clients(full_name, document_normalized)")
+      .order("starts_at");
+    if (params?.collaboratorFilterId) {
+      q = q.eq("collaborator_id", params.collaboratorFilterId);
+    }
+    const { data, error } = await q;
+    if (error) throw error;
+    return { ok: true, data: (data ?? []) as EventRow[] };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
