@@ -14,11 +14,17 @@ Requisito no dashboard Supabase: Realtime habilitado para a tabela `events` (a m
 
 Isso dispara outro evento Realtime de UPDATE; o front pode estender o handler para mensagens do tipo “evento em 30 minutos”.
 
-## Cron de fallback
+## Cron de fallback (Vercel Hobby)
 
-[`app/api/cron/reminders/route.ts`](../app/api/cron/reminders/route.ts): `GET` com `Authorization: Bearer CRON_SECRET` marca lembretes para eventos entre ~29 e ~31 minutos no futuro, se `reminder_sent_at` ainda for nulo.
+[`app/api/cron/reminders/route.ts`](../app/api/cron/reminders/route.ts): `GET` com `Authorization: Bearer CRON_SECRET` varre eventos nos **próximos 24h** e marca `reminder_sent_at` quando ainda estiver nulo (idempotente via `IS NULL`).
 
-[`vercel.json`](../vercel.json) inclui exemplo de cron por minuto na Vercel; ajuste conforme o provedor (outros hosts podem usar scheduler externo).
+[`vercel.json`](../vercel.json) está configurado para **1 execução diária** (`0 9 * * *`) para compatibilidade com limites do plano gratuito. Se precisar frequência maior, use outro scheduler externo.
+
+### Teste manual rápido
+
+1. Sem header `Authorization`, `GET /api/cron/reminders` deve retornar `401`.
+2. Com `Authorization: Bearer CRON_SECRET`, a rota deve retornar `200` com `{ processed: number }`.
+3. `POST /api/webhooks/event-reminder` sem assinatura `upstash-signature` deve retornar `401`.
 
 ## Mesmo dia
 

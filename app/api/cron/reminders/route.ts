@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/service";
 
 /**
- * Fallback: every minute, mark reminder_sent_at for events starting in ~30 minutes.
+ * Fallback for low-frequency schedulers (for example, Vercel Hobby daily cron).
+ * Marks unsent reminders for events starting in the next 24 hours.
  * Secure with Authorization: Bearer CRON_SECRET (Vercel Cron or manual).
  */
 export async function GET(req: NextRequest) {
@@ -17,8 +18,9 @@ export async function GET(req: NextRequest) {
   }
 
   const supabase = createSupabaseServiceRoleClient();
-  const from = new Date(Date.now() + 29 * 60 * 1000).toISOString();
-  const to = new Date(Date.now() + 31 * 60 * 1000).toISOString();
+  const now = Date.now();
+  const from = new Date(now).toISOString();
+  const to = new Date(now + 24 * 60 * 60 * 1000).toISOString();
 
   const { data: rows, error } = await supabase
     .from("events")
