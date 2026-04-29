@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/app/actions/clients";
 import type { ClientRow } from "@/lib/types/database";
 import { Plus } from "lucide-react";
@@ -9,6 +9,9 @@ export function ClientesAdmin({ initialClients }: { initialClients: ClientRow[] 
   const rows = initialClients;
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [cepBusy, setCepBusy] = useState(false);
+  const [cepMessage, setCepMessage] = useState<string | null>(null);
+  const lastLookupCepRef = useRef<string>("");
   const [form, setForm] = useState({
     documentType: "cpf" as "cpf" | "cnpj",
     documentNumber: "",
@@ -44,6 +47,48 @@ export function ClientesAdmin({ initialClients }: { initialClients: ClientRow[] 
     });
     window.location.reload();
   }
+
+  useEffect(() => {
+    const cep = form.postalCode.replace(/\D/g, "");
+    if (cep.length !== 8) {
+      return;
+    }
+    if (lastLookupCepRef.current === cep) return;
+    lastLookupCepRef.current = cep;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(async () => {
+      setCepBusy(true);
+      setCepMessage(null);
+      try {
+        const resp = await fetch(`https://brasilapi.com.br/api/cep/v2/${cep}`, {
+          signal: controller.signal,
+        });
+        if (!resp.ok) throw new Error("CEP não encontrado");
+        const data = (await resp.json()) as {
+          street?: string;
+          city?: string;
+          state?: string;
+        };
+        setForm((f) => ({
+          ...f,
+          addressLine: data.street?.trim() || f.addressLine,
+          city: data.city?.trim() || f.city,
+          state: data.state?.trim() || f.state,
+        }));
+        setCepMessage("Endereço preenchido automaticamente.");
+      } catch {
+        setCepMessage("Não foi possível consultar este CEP. Preencha manualmente.");
+      } finally {
+        setCepBusy(false);
+      }
+    }, 350);
+
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [form.postalCode]);
 
   return (
     <div className="space-y-4">
@@ -159,6 +204,22 @@ export function ClientesAdmin({ initialClients }: { initialClients: ClientRow[] 
                 />
               </div>
               <div className="col-span-2">
+                <label className="mb-1 block text-xs font-medium">CEP</label>
+                <input
+                  className="w-full rounded border border-zinc-200 px-2 py-2 text-sm"
+                  value={form.postalCode}
+                  onChange={(e) => {
+                    setCepMessage(null);
+                    setForm((f) => ({ ...f, postalCode: e.target.value }));
+                  }}
+                />
+                <p className="mt-1 text-xs text-zinc-500">
+                  {cepBusy
+                    ? "Consultando CEP..."
+                    : (cepMessage ?? "Informe o CEP para preencher endereço automaticamente.")}
+                </p>
+              </div>
+              <div className="col-span-2">
                 <label className="mb-1 block text-xs font-medium">
                   Endereço
                 </label>
@@ -187,16 +248,6 @@ export function ClientesAdmin({ initialClients }: { initialClients: ClientRow[] 
                   value={form.state}
                   onChange={(e) =>
                     setForm((f) => ({ ...f, state: e.target.value }))
-                  }
-                />
-              </div>
-              <div className="col-span-2">
-                <label className="mb-1 block text-xs font-medium">CEP</label>
-                <input
-                  className="w-full rounded border border-zinc-200 px-2 py-2 text-sm"
-                  value={form.postalCode}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, postalCode: e.target.value }))
                   }
                 />
               </div>

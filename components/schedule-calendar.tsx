@@ -31,6 +31,22 @@ import { X } from "lucide-react";
 
 const TZ = process.env.NEXT_PUBLIC_APP_TIMEZONE ?? "America/Sao_Paulo";
 
+type BrasilApiHoliday = {
+  date: string;
+  name: string;
+  type?: string;
+};
+
+type HolidayEntry = {
+  date: string;
+  name: string;
+  source: "national" | "municipal";
+};
+
+const UBERLANDIA_MUNICIPAL_HOLIDAYS = [
+  { monthDay: "08-31", name: "Aniversário de Uberlândia" },
+] as const;
+
 function calendarsByAccess(access: UserRole): Record<string, CalendarType> {
   const readonly = access === "collaborator";
   const base = (main: string, container: string, on: string): CalendarType => ({
@@ -46,6 +62,12 @@ function calendarsByAccess(access: UserRole): Record<string, CalendarType> {
     confirmed: base("#4285F4", "#E8F0FE", "#333"),
     assigned: base("#0F9D58", "#E6F4EA", "#333"),
     rejected: base("#DB4437", "#FDECEA", "#333"),
+    holiday: {
+      colorName: "holiday",
+      lightColors: { main: "#7E57C2", container: "#F3E8FF", onContainer: "#2D1B45" },
+      darkColors: { main: "#7E57C2", container: "#F3E8FF", onContainer: "#2D1B45" },
+      readonly: true,
+    },
   };
 }
 
@@ -89,6 +111,71 @@ function mapRowsToCalendarEvents(rows: EventRow[]): CalendarEvent[] {
   });
 }
 
+async function fetchNationalHolidays(year: number): Promise<HolidayEntry[]> {
+  const resp = await fetch(`https://brasilapi.com.br/api/feriados/v1/${year}`);
+  if (!resp.ok) return [];
+  const data = (await resp.json()) as BrasilApiHoliday[];
+  return data.map((h) => ({
+    date: h.date,
+    name: h.name,
+    source: "national",
+  }));
+}
+
+async function fetchUberlandiaHolidaysFromApi(year: number): Promise<HolidayEntry[]> {
+  const endpoints = [
+    `https://brasilapi.com.br/api/feriados/v1/${year}?uf=MG&city=Uberlandia`,
+    `https://brasilapi.com.br/api/feriados/v1/${year}?state=MG&city=Uberlandia`,
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const resp = await fetch(endpoint);
+      if (!resp.ok) continue;
+      const data = (await resp.json()) as BrasilApiHoliday[];
+      if (!Array.isArray(data) || data.length === 0) continue;
+      return data.map((h) => ({
+        date: h.date,
+        name: h.name,
+        source: "municipal",
+      }));
+    } catch {
+      // fallback below
+    }
+  }
+
+  return UBERLANDIA_MUNICIPAL_HOLIDAYS.map((h) => ({
+    date: `${year}-${h.monthDay}`,
+    name: h.name,
+    source: "municipal",
+  }));
+}
+
+function holidayEntriesToCalendarEvents(entries: HolidayEntry[]): CalendarEvent[] {
+  return entries.map((h) => {
+    const day = Temporal.PlainDate.from(h.date);
+    const start = Temporal.ZonedDateTime.from({
+      year: day.year,
+      month: day.month,
+      day: day.day,
+      hour: 0,
+      minute: 0,
+      second: 0,
+      timeZone: TZ,
+    });
+    const end = start.add({ days: 1 });
+    const sourceLabel = h.source === "municipal" ? "Uberlândia/MG" : "Nacional";
+    return {
+      id: `holiday:${h.date}:${h.name}`,
+      title: `Feriado (${sourceLabel}) · ${h.name}`,
+      start,
+      end,
+      calendarId: "holiday",
+      description: `Feriado ${sourceLabel}`,
+    };
+  });
+}
+
 type Props = {
   access: UserRole;
   userId: string;
@@ -116,6 +203,7 @@ export function ScheduleCalendar({
   const [formStart, setFormStart] = useState("");
   const [formEnd, setFormEnd] = useState("");
   const [saving, setSaving] = useState(false);
+  const [holidayEvents, setHolidayEvents] = useState<CalendarEvent[]>([]);
   const rowsRef = useRef(rows);
   const skipFilterRefresh = useRef(true);
 
@@ -177,6 +265,39 @@ export function ScheduleCalendar({
     };
   }, [refresh, userId]);
 
+  useEffect(() => {
+    let active = true;
+    const nowYear = Temporal.Now.plainDateISO().year;
+    const years = [nowYear, nowYear + 1];
+
+    void (async () => {
+      try {
+        const perYear = await Promise.all(
+          years.map(async (year) => {
+            const [national, uberlandia] = await Promise.all([
+              fetchNationalHolidays(year),
+              fetchUberlandiaHolidaysFromApi(year),
+            ]);
+            return [...national, ...uberlandia];
+          }),
+        );
+        if (!active) return;
+        const all = perYear.flat();
+        const deduped = Array.from(
+          new Map(all.map((h) => [`${h.date}:${h.name}`, h])).values(),
+        );
+        setHolidayEvents(holidayEntriesToCalendarEvents(deduped));
+      } catch {
+        if (!active) return;
+        setHolidayEvents([]);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const calendars = useMemo(() => calendarsByAccess(access), [access]);
 
   const calendarApp = useNextCalendarApp({
@@ -204,7 +325,8 @@ export function ScheduleCalendar({
           setAssignId(collaborators[0]?.id ?? "");
         }
       },
-      onBeforeEventUpdate: () => access === "admin",
+      onBeforeEventUpdate: (calEvent) =>
+        access === "admin" && !String(calEvent.id).startsWith("holiday:"),
       onEventUpdate: async (calEvent) => {
         if (access !== "admin") return;
         const id = String(calEvent.id);
@@ -223,8 +345,11 @@ export function ScheduleCalendar({
 
   useEffect(() => {
     if (!calendarApp) return;
-    calendarApp.events.set(mapRowsToCalendarEvents(rows));
-  }, [calendarApp, rows]);
+    calendarApp.events.set([
+      ...mapRowsToCalendarEvents(rows),
+      ...holidayEvents,
+    ]);
+  }, [calendarApp, holidayEvents, rows]);
 
   async function handleCreateSubmit(e: React.FormEvent) {
     e.preventDefault();

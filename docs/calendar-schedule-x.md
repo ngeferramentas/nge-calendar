@@ -6,7 +6,7 @@
 
 - importa `temporal-polyfill/global` (peer do `@schedule-x/calendar`);
 - usa **`useNextCalendarApp`** de `@schedule-x/react` (compatível com Next.js / SSR);
-- registra views **semana** e **dia** (`viewWeek`, `viewDay`);
+- registra views **semana** e **dia** (`viewWeek`, `viewDay`, `viewWeek`,);
 - aplica tema default: `@schedule-x/theme-default/dist/index.css`.
 
 ## Cores (paleta Google)
