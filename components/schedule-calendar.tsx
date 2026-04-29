@@ -9,6 +9,7 @@ import {
 import {
   viewWeek,
   viewDay,
+  viewMonthGrid,
   type CalendarEvent,
   type CalendarType,
 } from "@schedule-x/calendar";
@@ -180,8 +181,9 @@ export function ScheduleCalendar({
 
   const calendarApp = useNextCalendarApp({
     theme: "default",
+    locale: "pt-BR",
     timezone: TZ,
-    views: [viewWeek, viewDay],
+    views: [viewWeek, viewDay, viewMonthGrid],
     calendars,
     events: [],
     selectedDate: Temporal.Now.plainDateISO(),
