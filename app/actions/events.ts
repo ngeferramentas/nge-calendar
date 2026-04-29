@@ -21,6 +21,19 @@ function err(e: unknown): string {
   return e instanceof Error ? e.message : "Erro desconhecido";
 }
 
+function parseValidationError(raw: unknown): string {
+  const fallback = "Dados inválidos. Revise os campos e tente novamente.";
+  if (!raw || typeof raw !== "object" || !("flatten" in raw)) return fallback;
+  const flattened = (raw as { flatten: () => { formErrors: string[]; fieldErrors: Record<string, string[] | undefined> } }).flatten();
+  const formErrors = flattened.formErrors ?? [];
+  const fieldErrors = Object.values(flattened.fieldErrors ?? {}).flatMap(
+    (messages) => messages ?? [],
+  );
+  const messages = [...formErrors, ...fieldErrors].filter(Boolean);
+  if (messages.length === 0) return fallback;
+  return messages.join(", ");
+}
+
 async function notifyCollaboratorAssignment(params: {
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
   recipientId: string;
@@ -49,12 +62,35 @@ export async function createEvent(
 
     const parsed = createEventSchema.safeParse(raw);
     if (!parsed.success) {
-      return { ok: false, error: parsed.error.flatten().formErrors.join(", ") };
+      return { ok: false, error: parseValidationError(parsed.error) };
     }
 
     const supabase = await createSupabaseServerClient();
     const isAdmin = ctx.profile.role === "admin";
     const input = parsed.data;
+    // #region agent log
+    fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Debug-Session-Id": "f92143",
+      },
+      body: JSON.stringify({
+        sessionId: "f92143",
+        runId: "pre-fix",
+        hypothesisId: "H2",
+        location: "app/actions/events.ts:createEvent",
+        message: "createEvent input received",
+        data: {
+          hasCollaboratorId: Boolean(input.collaboratorId),
+          startsAt: input.startsAt,
+          endsAt: input.endsAt,
+          isAdmin,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
 
     let status: EventStatus;
     const collaboratorId = input.collaboratorId;
@@ -100,6 +136,24 @@ export async function createEvent(
       .single();
 
     if (error) throw error;
+    // #region agent log
+    fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Debug-Session-Id": "f92143",
+      },
+      body: JSON.stringify({
+        sessionId: "f92143",
+        runId: "pre-fix",
+        hypothesisId: "H2",
+        location: "app/actions/events.ts:createEvent",
+        message: "Event inserted in database",
+        data: { eventId: data.id, status, hasCollaboratorId: Boolean(collaboratorId) },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
 
     await appendAuditLog(supabase, {
       entityType: "event",
@@ -109,12 +163,16 @@ export async function createEvent(
     });
 
     if (collaboratorId && status === "assigned") {
-      await scheduleEventReminder({
-        eventId: data.id,
-        startsAtIso: input.startsAt,
-      });
+      try {
+        await scheduleEventReminder({
+          eventId: data.id,
+          startsAtIso: input.startsAt,
+        });
+      } catch {
+        // Reminders should never block event creation.
+      }
     }
-    if (collaboratorId) {
+    if (collaboratorId && status === "assigned") {
       await notifyCollaboratorAssignment({
         supabase,
         recipientId: collaboratorId,
@@ -127,6 +185,24 @@ export async function createEvent(
     revalidatePath("/agenda");
     return { ok: true, data: { id: data.id } };
   } catch (e) {
+    // #region agent log
+    fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Debug-Session-Id": "f92143",
+      },
+      body: JSON.stringify({
+        sessionId: "f92143",
+        runId: "pre-fix",
+        hypothesisId: "H1",
+        location: "app/actions/events.ts:createEvent:catch",
+        message: "createEvent failed",
+        data: { error: err(e) },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     return { ok: false, error: err(e) };
   }
 }
@@ -138,7 +214,7 @@ export async function updateEvent(raw: unknown): Promise<ActionResult> {
 
     const parsed = updateEventSchema.safeParse(raw);
     if (!parsed.success) {
-      return { ok: false, error: parsed.error.flatten().formErrors.join(", ") };
+      return { ok: false, error: parseValidationError(parsed.error) };
     }
 
     const supabase = await createSupabaseServerClient();
@@ -206,7 +282,11 @@ export async function updateEvent(raw: unknown): Promise<ActionResult> {
       (row.collaborator_id === null && collaboratorId)
     ) {
       if (collaboratorId && nextStatus === "assigned") {
-        await scheduleEventReminder({ eventId: id, startsAtIso: startsAt });
+        try {
+          await scheduleEventReminder({ eventId: id, startsAtIso: startsAt });
+        } catch {
+          // Reminders should never block event updates.
+        }
       }
     }
     if (
@@ -239,7 +319,7 @@ export async function approveAndAssignEvent(
 
     const parsed = approveAndAssignSchema.safeParse(raw);
     if (!parsed.success) {
-      return { ok: false, error: parsed.error.flatten().formErrors.join(", ") };
+      return { ok: false, error: parseValidationError(parsed.error) };
     }
 
     const supabase = await createSupabaseServerClient();
@@ -288,10 +368,14 @@ export async function approveAndAssignEvent(
       metadata: { collaboratorId },
     });
 
-    await scheduleEventReminder({
-      eventId,
-      startsAtIso: row.starts_at,
-    });
+    try {
+      await scheduleEventReminder({
+        eventId,
+        startsAtIso: row.starts_at,
+      });
+    } catch {
+      // Reminders should never block event approval and assignment.
+    }
     await notifyCollaboratorAssignment({
       supabase,
       recipientId: collaboratorId,
@@ -334,6 +418,29 @@ export async function rejectEvent(eventId: string): Promise<ActionResult> {
   }
 }
 
+export async function deleteEvent(eventId: string): Promise<ActionResult> {
+  try {
+    const ctx = await getSessionContext();
+    requireAdmin(ctx);
+
+    const supabase = await createSupabaseServerClient();
+    const { error } = await supabase.from("events").delete().eq("id", eventId);
+    if (error) throw error;
+
+    await appendAuditLog(supabase, {
+      entityType: "event",
+      entityId: eventId,
+      action: "delete",
+      metadata: {},
+    });
+
+    revalidatePath("/agenda");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
+
 export async function listEventsForUser(params?: {
   collaboratorFilterId?: string | null;
 }): Promise<ActionResult<EventRow[]>> {
@@ -347,15 +454,12 @@ export async function listEventsForUser(params?: {
       const { data, error } = await supabase
         .from("events")
         .select("*, clients(full_name, document_normalized)")
+        .or(
+          `collaborator_id.eq.${ctx.userId},and(created_by.eq.${ctx.userId},status.eq.pending_approval)`,
+        )
         .order("starts_at");
       if (error) throw error;
-      const rows = (data ?? []) as EventRow[];
-      const filtered = rows.filter(
-        (e) =>
-          e.collaborator_id === ctx.userId ||
-          (e.created_by === ctx.userId && e.status === "pending_approval"),
-      );
-      return { ok: true, data: filtered };
+      return { ok: true, data: (data ?? []) as EventRow[] };
     }
 
     let q = supabase

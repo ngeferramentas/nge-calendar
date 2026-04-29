@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   approveAndAssignEvent,
   createEvent,
+  deleteEvent,
   listEventsForUser,
   rejectEvent,
   updateEvent,
@@ -28,7 +29,7 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { ClientCombobox } from "@/components/client-combobox";
 import { CollaboratorCombobox } from "@/components/collaborator-combobox";
 import type { ClientRow } from "@/lib/types/database";
-import { X } from "lucide-react";
+import { Trash2, X } from "lucide-react";
 
 const TZ = process.env.NEXT_PUBLIC_APP_TIMEZONE ?? "America/Sao_Paulo";
 
@@ -196,6 +197,7 @@ export function ScheduleCalendar({
   const [banner, setBanner] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState<EventRow | null>(null);
+  const [detailOpen, setDetailOpen] = useState<EventRow | null>(null);
   const [assignId, setAssignId] = useState<string>("");
 
   const [formTitle, setFormTitle] = useState("");
@@ -217,8 +219,19 @@ export function ScheduleCalendar({
       collaboratorFilterId:
         access === "admin" ? collaboratorFilterId : undefined,
     });
-    if (res.ok && res.data) setRows(res.data);
+    if (!res.ok) {
+      setBanner(res.error);
+      return;
+    }
+    if (res.data) setRows(res.data);
   }, [access, collaboratorFilterId]);
+
+  const formatDateTimePtBr = useCallback((iso: string) => {
+    return new Date(iso).toLocaleString("pt-BR", {
+      dateStyle: "short",
+      timeStyle: "short",
+    });
+  }, []);
 
   useEffect(() => {
     rowsRef.current = rows;
@@ -256,7 +269,7 @@ export function ScheduleCalendar({
           void refresh();
           const next = payload.new as { collaborator_id?: string } | null;
           if (
-            payload.eventType === "UPDATE" &&
+            (payload.eventType === "UPDATE" || payload.eventType === "INSERT") &&
             next?.collaborator_id === userId
           ) {
             setBanner("Um evento foi atribuído a você.");
@@ -309,6 +322,7 @@ export function ScheduleCalendar({
     theme: "default",
     locale: "pt-BR",
     timezone: TZ,
+    defaultView: "month-grid",
     views: [viewMonthGrid, viewWeek, viewDay],
     calendars,
     events: [],
@@ -323,12 +337,10 @@ export function ScheduleCalendar({
     },
     callbacks: {
       onEventClick: (calEvent) => {
+        if (String(calEvent.id).startsWith("holiday:")) return;
         const row = rowsRef.current.find((r) => r.id === String(calEvent.id));
         if (!row) return;
-        if (access === "admin" && row.status === "pending_approval") {
-          setAdminOpen(row);
-          setAssignId(collaborators[0]?.id ?? "");
-        }
+        setDetailOpen(row);
       },
       onBeforeEventUpdate: (calEvent) =>
         access === "admin" && !String(calEvent.id).startsWith("holiday:"),
@@ -347,6 +359,33 @@ export function ScheduleCalendar({
       },
     },
   });
+
+  useEffect(() => {
+    if (!calendarApp) return;
+    // #region agent log
+    fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Debug-Session-Id": "f92143",
+      },
+      body: JSON.stringify({
+        sessionId: "f92143",
+        runId: "pre-fix",
+        hypothesisId: "H3",
+        location: "components/schedule-calendar.tsx:calendarAppInit",
+        message: "Calendar initialized",
+        data: {
+          configuredViews: ["month-grid", "week", "day"],
+          selectedView:
+            (calendarApp as { calendarState?: { view?: { value?: string } } })
+              .calendarState?.view?.value ?? "unknown",
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+  }, [calendarApp]);
 
   useEffect(() => {
     if (!calendarApp) return;
@@ -373,25 +412,50 @@ export function ScheduleCalendar({
     const startIso = new Date(formStart).toISOString();
     const endIso = new Date(formEnd).toISOString();
     setSaving(true);
-    const res = await createEvent({
-      title: formTitle,
-      description: formDesc,
-      clientId: formClient.id,
-      collaboratorId: formCollaborator.id,
-      startsAt: startIso,
-      endsAt: endIso,
-    });
-    setSaving(false);
-    if (!res.ok) {
-      alert(res.error);
-      return;
+    try {
+      const res = await createEvent({
+        title: formTitle,
+        description: formDesc,
+        clientId: formClient.id,
+        collaboratorId: formCollaborator.id,
+        startsAt: startIso,
+        endsAt: endIso,
+      });
+      // #region agent log
+      fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Debug-Session-Id": "f92143",
+        },
+        body: JSON.stringify({
+          sessionId: "f92143",
+          runId: "pre-fix",
+          hypothesisId: "H4",
+          location: "components/schedule-calendar.tsx:handleCreateSubmit",
+          message: "createEvent response",
+          data: { ok: res.ok, error: res.ok ? null : res.error },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
+      if (!res.ok) {
+        alert(res.error);
+        return;
+      }
+      setCreateOpen(false);
+      setFormTitle("");
+      setFormDesc("");
+      setFormClient(null);
+      setFormCollaborator(null);
+      setFormStart("");
+      setFormEnd("");
+      await refresh();
+    } catch {
+      alert("Não foi possível criar o evento agora.");
+    } finally {
+      setSaving(false);
     }
-    await refresh();
-    setCreateOpen(false);
-    setFormTitle("");
-    setFormDesc("");
-    setFormClient(null);
-    setFormCollaborator(null);
   }
 
   async function handleApprove() {
@@ -419,6 +483,24 @@ export function ScheduleCalendar({
       alert(res.error);
       return;
     }
+    setAdminOpen(null);
+    await refresh();
+  }
+
+  async function handleDelete() {
+    if (!detailOpen || access !== "admin") return;
+    const confirmed = window.confirm(
+      "Deseja excluir este agendamento? Esta ação não pode ser desfeita.",
+    );
+    if (!confirmed) return;
+    setSaving(true);
+    const res = await deleteEvent(detailOpen.id);
+    setSaving(false);
+    if (!res.ok) {
+      alert(res.error);
+      return;
+    }
+    setDetailOpen(null);
     setAdminOpen(null);
     await refresh();
   }
@@ -510,21 +592,33 @@ export function ScheduleCalendar({
                   </label>
                   <input
                     type="datetime-local"
+                    lang="pt-BR"
                     required
                     className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
                     value={formStart}
                     onChange={(e) => setFormStart(e.target.value)}
                   />
+                  {formStart && (
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {formatDateTimePtBr(new Date(formStart).toISOString())}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="mb-1 block text-sm font-medium">Fim</label>
                   <input
                     type="datetime-local"
+                    lang="pt-BR"
                     required
                     className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
                     value={formEnd}
                     onChange={(e) => setFormEnd(e.target.value)}
                   />
+                  {formEnd && (
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {formatDateTimePtBr(new Date(formEnd).toISOString())}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -545,6 +639,72 @@ export function ScheduleCalendar({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {detailOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
+            <h2 className="mb-2 text-lg font-semibold text-zinc-900">
+              {detailOpen.title?.trim() || "Agendamento"}
+            </h2>
+            <div className="space-y-2 text-sm text-zinc-700">
+              <p>
+                <span className="font-medium text-zinc-900">Cliente:</span>{" "}
+                {detailOpen.clients?.full_name ?? detailOpen.client_id}
+              </p>
+              <p>
+                <span className="font-medium text-zinc-900">Início:</span>{" "}
+                {formatDateTimePtBr(detailOpen.starts_at)}
+              </p>
+              <p>
+                <span className="font-medium text-zinc-900">Fim:</span>{" "}
+                {formatDateTimePtBr(detailOpen.ends_at)}
+              </p>
+              <p>
+                <span className="font-medium text-zinc-900">Status:</span>{" "}
+                {EVENT_STATUS_LABELS[detailOpen.status]}
+              </p>
+              {detailOpen.description?.trim() && (
+                <p>
+                  <span className="font-medium text-zinc-900">Descrição:</span>{" "}
+                  {detailOpen.description}
+                </p>
+              )}
+            </div>
+            <div className="mt-6 flex flex-wrap justify-end gap-2">
+              {access === "admin" && detailOpen.status === "pending_approval" && (
+                <button
+                  type="button"
+                  className="rounded-lg bg-[#4285F4] px-4 py-2 text-sm font-medium text-white"
+                  onClick={() => {
+                    setAdminOpen(detailOpen);
+                    setAssignId(collaborators[0]?.id ?? "");
+                  }}
+                >
+                  Aprovar/rejeitar
+                </button>
+              )}
+              {access === "admin" && (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-2 rounded-lg bg-[#DB4437] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                  onClick={() => void handleDelete()}
+                  disabled={saving}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Excluir
+                </button>
+              )}
+              <button
+                type="button"
+                className="rounded-lg px-4 py-2 text-sm text-zinc-600 hover:bg-zinc-100"
+                onClick={() => setDetailOpen(null)}
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
