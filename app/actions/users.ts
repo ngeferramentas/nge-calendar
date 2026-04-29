@@ -33,6 +33,10 @@ const promoteSchema = z.object({
   canManageUsers: z.boolean(),
 });
 
+const searchCollaboratorsSchema = z.object({
+  query: z.string().trim().min(1).max(120),
+});
+
 function err(e: unknown): string {
   return e instanceof Error ? e.message : "Erro desconhecido";
 }
@@ -51,6 +55,37 @@ export async function listCollaborators(): Promise<
       .select("id, full_name")
       .eq("role", "collaborator")
       .order("full_name");
+
+    if (error) throw error;
+    return { ok: true, data: (data ?? []) as { id: string; full_name: string }[] };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
+
+export async function searchCollaborators(
+  query: string,
+): Promise<ActionResult<{ id: string; full_name: string }[]>> {
+  try {
+    const ctx = await getSessionContext();
+    if (!ctx) return { ok: false, error: "Não autenticado." };
+
+    const parsed = searchCollaboratorsSchema.safeParse({ query });
+    if (!parsed.success) {
+      return { ok: false, error: "Busca inválida." };
+    }
+
+    const safe = parsed.data.query.replace(/[%_\\]/g, "");
+    const pattern = `%${safe}%`;
+
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, full_name")
+      .eq("role", "collaborator")
+      .ilike("full_name", pattern)
+      .order("full_name")
+      .limit(20);
 
     if (error) throw error;
     return { ok: true, data: (data ?? []) as { id: string; full_name: string }[] };

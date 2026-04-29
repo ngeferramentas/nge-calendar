@@ -61,6 +61,16 @@ export type AuditLogRow = {
   created_at: string;
 };
 
+export type NotificationRow = {
+  id: string;
+  recipient_id: string;
+  created_by: string;
+  event_id: string | null;
+  message: string;
+  is_read: boolean;
+  created_at: string;
+};
+
 export const EVENT_STATUS_LABELS: Record<EventStatus, string> = {
   pending_approval: "Pendente",
   approved: "Aprovado",

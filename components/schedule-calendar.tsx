@@ -26,6 +26,7 @@ import type { EventRow, EventStatus, UserRole } from "@/lib/types/database";
 import { eventStatusColor, EVENT_STATUS_LABELS } from "@/lib/types/database";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { ClientCombobox } from "@/components/client-combobox";
+import { CollaboratorCombobox } from "@/components/collaborator-combobox";
 import type { ClientRow } from "@/lib/types/database";
 import { X } from "lucide-react";
 
@@ -200,6 +201,10 @@ export function ScheduleCalendar({
   const [formTitle, setFormTitle] = useState("");
   const [formDesc, setFormDesc] = useState("");
   const [formClient, setFormClient] = useState<ClientRow | null>(null);
+  const [formCollaborator, setFormCollaborator] = useState<{
+    id: string;
+    full_name: string;
+  } | null>(null);
   const [formStart, setFormStart] = useState("");
   const [formEnd, setFormEnd] = useState("");
   const [saving, setSaving] = useState(false);
@@ -304,7 +309,7 @@ export function ScheduleCalendar({
     theme: "default",
     locale: "pt-BR",
     timezone: TZ,
-    views: [viewWeek, viewDay, viewMonthGrid],
+    views: [viewMonthGrid, viewWeek, viewDay],
     calendars,
     events: [],
     selectedDate: Temporal.Now.plainDateISO(),
@@ -357,6 +362,10 @@ export function ScheduleCalendar({
       alert("Selecione um cliente.");
       return;
     }
+    if (!formCollaborator) {
+      alert("Selecione um colaborador.");
+      return;
+    }
     if (!formStart || !formEnd) {
       alert("Informe início e fim.");
       return;
@@ -368,6 +377,7 @@ export function ScheduleCalendar({
       title: formTitle,
       description: formDesc,
       clientId: formClient.id,
+      collaboratorId: formCollaborator.id,
       startsAt: startIso,
       endsAt: endIso,
     });
@@ -376,11 +386,12 @@ export function ScheduleCalendar({
       alert(res.error);
       return;
     }
+    await refresh();
     setCreateOpen(false);
     setFormTitle("");
     setFormDesc("");
     setFormClient(null);
-    await refresh();
+    setFormCollaborator(null);
   }
 
   async function handleApprove() {
@@ -466,6 +477,11 @@ export function ScheduleCalendar({
               <ClientCombobox
                 value={formClient}
                 onChange={setFormClient}
+                disabled={saving}
+              />
+              <CollaboratorCombobox
+                value={formCollaborator}
+                onChange={setFormCollaborator}
                 disabled={saving}
               />
               <div>

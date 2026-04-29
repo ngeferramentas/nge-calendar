@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { signOut } from "@/app/actions/auth";
+import { listMyNotifications } from "@/app/actions/notifications";
+import { NotificationBell } from "@/components/notification-bell";
 
 export const dynamic = "force-dynamic";
 import { getSessionContext } from "@/lib/auth/session";
@@ -13,6 +15,7 @@ export default async function AppLayout({
 }) {
   const ctx = await getSessionContext();
   if (!ctx) redirect("/");
+  const notificationsRes = await listMyNotifications();
 
   const isAdmin = ctx.profile.role === "admin";
   const canManage = isAdmin && ctx.profile.can_manage_users;
@@ -61,13 +64,21 @@ export default async function AppLayout({
         </form>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="border-b border-zinc-200 bg-white px-8 py-4">
-          <p className="text-xs uppercase tracking-wide text-zinc-500">
-            {ctx.profile.role === "admin" ? "Administrador" : "Colaborador"}
-          </p>
-          <h1 className="text-lg font-semibold text-zinc-900">
-            {ctx.profile.full_name || ctx.email}
-          </h1>
+        <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-8 py-4">
+          <div>
+            <p className="text-xs uppercase tracking-wide text-zinc-500">
+              {ctx.profile.role === "admin" ? "Administrador" : "Colaborador"}
+            </p>
+            <h1 className="text-lg font-semibold text-zinc-900">
+              {ctx.profile.full_name || ctx.email}
+            </h1>
+          </div>
+          <NotificationBell
+            userId={ctx.userId}
+            initialNotifications={
+              notificationsRes.ok ? notificationsRes.data ?? [] : []
+            }
+          />
         </header>
         <main className="flex-1 p-8">{children}</main>
       </div>

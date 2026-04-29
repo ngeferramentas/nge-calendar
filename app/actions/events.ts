@@ -21,6 +21,25 @@ function err(e: unknown): string {
   return e instanceof Error ? e.message : "Erro desconhecido";
 }
 
+async function notifyCollaboratorAssignment(params: {
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
+  recipientId: string;
+  createdBy: string;
+  eventId: string;
+  title: string;
+}): Promise<void> {
+  if (params.recipientId === params.createdBy) return;
+  const message = params.title
+    ? `Novo agendamento: ${params.title}`
+    : "Você recebeu um novo agendamento.";
+  await params.supabase.from("notifications").insert({
+    recipient_id: params.recipientId,
+    created_by: params.createdBy,
+    event_id: params.eventId,
+    message,
+  });
+}
+
 export async function createEvent(
   raw: unknown,
 ): Promise<ActionResult<{ id: string }>> {
@@ -38,16 +57,14 @@ export async function createEvent(
     const input = parsed.data;
 
     let status: EventStatus;
-    let collaboratorId: string | null;
+    const collaboratorId = input.collaboratorId;
     let assignedAt: string | null = null;
     let approvedAt: string | null = null;
     let approvedBy: string | null = null;
 
     if (!isAdmin) {
       status = "pending_approval";
-      collaboratorId = null;
     } else {
-      collaboratorId = input.collaboratorId ?? null;
       if (collaboratorId) {
         status = "assigned";
         assignedAt = new Date().toISOString();
@@ -95,6 +112,15 @@ export async function createEvent(
       await scheduleEventReminder({
         eventId: data.id,
         startsAtIso: input.startsAt,
+      });
+    }
+    if (collaboratorId) {
+      await notifyCollaboratorAssignment({
+        supabase,
+        recipientId: collaboratorId,
+        createdBy: ctx.userId,
+        eventId: data.id,
+        title: input.title ?? "",
       });
     }
 
@@ -183,6 +209,19 @@ export async function updateEvent(raw: unknown): Promise<ActionResult> {
         await scheduleEventReminder({ eventId: id, startsAtIso: startsAt });
       }
     }
+    if (
+      patch.collaboratorId !== undefined &&
+      patch.collaboratorId &&
+      patch.collaboratorId !== row.collaborator_id
+    ) {
+      await notifyCollaboratorAssignment({
+        supabase,
+        recipientId: patch.collaboratorId,
+        createdBy: adminCtx.userId,
+        eventId: id,
+        title: patch.title ?? row.title,
+      });
+    }
 
     revalidatePath("/agenda");
     return { ok: true };
@@ -252,6 +291,13 @@ export async function approveAndAssignEvent(
     await scheduleEventReminder({
       eventId,
       startsAtIso: row.starts_at,
+    });
+    await notifyCollaboratorAssignment({
+      supabase,
+      recipientId: collaboratorId,
+      createdBy: ctx!.userId,
+      eventId,
+      title: row.title,
     });
 
     revalidatePath("/agenda");

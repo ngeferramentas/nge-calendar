@@ -14,7 +14,7 @@ export const createEventSchema = z
     title: z.string().max(500).optional().default(""),
     description: z.string().max(5000).optional().default(""),
     clientId: z.string().uuid(),
-    collaboratorId: z.string().uuid().nullable().optional(),
+    collaboratorId: z.string().uuid(),
     startsAt: z.string().datetime({ offset: true }),
     endsAt: z.string().datetime({ offset: true }),
     /** Set by server for collaborators; admins may pass */
