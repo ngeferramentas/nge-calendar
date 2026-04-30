@@ -14,8 +14,18 @@ export type ProfileRow = {
   full_name: string;
   role: UserRole;
   can_manage_users: boolean;
+  calendar_color: string;
+  birth_date: string | null;
   created_at: string;
   updated_at: string;
+};
+
+/** Public directory row for agenda (from server action, not direct client query). */
+export type CollaboratorCalendarMeta = {
+  id: string;
+  full_name: string;
+  calendar_color: string;
+  birth_date: string | null;
 };
 
 export type ClientRow = {
@@ -49,6 +59,7 @@ export type EventRow = {
   assigned_at: string | null;
   reminder_sent_at: string | null;
   clients?: { full_name: string; document_normalized: string } | null;
+  collaborator_profile?: { calendar_color: string } | null;
 };
 
 export type AuditLogRow = {
@@ -85,6 +96,18 @@ export const GOOGLE_PALETTE = {
   yellow: "#F4B400",
   green: "#0F9D58",
 } as const;
+
+/** Preset colors for collaborator calendar picker (hex #RRGGBB). */
+export const CALENDAR_COLOR_PRESETS: readonly string[] = [
+  GOOGLE_PALETTE.blue,
+  GOOGLE_PALETTE.green,
+  GOOGLE_PALETTE.red,
+  GOOGLE_PALETTE.yellow,
+  "#7E57C2",
+  "#00ACC1",
+  "#FF6D00",
+  "#5C6BC0",
+] as const;
 
 export function eventStatusColor(status: EventStatus): string {
   switch (status) {

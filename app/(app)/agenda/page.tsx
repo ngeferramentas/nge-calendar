@@ -1,5 +1,8 @@
 import { listEventsForUser } from "@/app/actions/events";
-import { listCollaborators } from "@/app/actions/users";
+import {
+  listCollaboratorCalendarMeta,
+  listCollaborators,
+} from "@/app/actions/users";
 import { AgendaView } from "@/components/agenda-view";
 import { getSessionContext } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
@@ -11,6 +14,7 @@ export default async function AgendaPage() {
   const eventsRes = await listEventsForUser({});
   const collaboratorsRes =
     ctx.profile.role === "admin" ? await listCollaborators() : { ok: true as const, data: [] };
+  const metaRes = await listCollaboratorCalendarMeta();
 
   return (
     <div>
@@ -22,6 +26,7 @@ export default async function AgendaPage() {
         collaborators={
           collaboratorsRes.ok ? collaboratorsRes.data ?? [] : []
         }
+        collaboratorMeta={metaRes.ok ? metaRes.data ?? [] : []}
       />
     </div>
   );

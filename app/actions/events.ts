@@ -450,10 +450,13 @@ export async function listEventsForUser(params?: {
 
     const supabase = await createSupabaseServerClient();
 
+    const eventSelect =
+      "*, clients(full_name, document_normalized), collaborator_profile:profiles!events_collaborator_id_fkey(calendar_color)";
+
     if (ctx.profile.role === "collaborator") {
       const { data, error } = await supabase
         .from("events")
-        .select("*, clients(full_name, document_normalized)")
+        .select(eventSelect)
         .or(
           `collaborator_id.eq.${ctx.userId},and(created_by.eq.${ctx.userId},status.eq.pending_approval)`,
         )
@@ -462,10 +465,7 @@ export async function listEventsForUser(params?: {
       return { ok: true, data: (data ?? []) as EventRow[] };
     }
 
-    let q = supabase
-      .from("events")
-      .select("*, clients(full_name, document_normalized)")
-      .order("starts_at");
+    let q = supabase.from("events").select(eventSelect).order("starts_at");
     if (params?.collaboratorFilterId) {
       q = q.eq("collaborator_id", params.collaboratorFilterId);
     }

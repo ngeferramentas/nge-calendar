@@ -2,13 +2,18 @@
 
 import { useState } from "react";
 import { ScheduleCalendar } from "@/components/schedule-calendar";
-import type { EventRow, UserRole } from "@/lib/types/database";
+import type {
+  CollaboratorCalendarMeta,
+  EventRow,
+  UserRole,
+} from "@/lib/types/database";
 
 type Props = {
   access: UserRole;
   userId: string;
   initialEvents: EventRow[];
-  collaborators: { id: string; full_name: string }[];
+  collaborators: { id: string; full_name: string; calendar_color: string }[];
+  collaboratorMeta: CollaboratorCalendarMeta[];
 };
 
 export function AgendaView({
@@ -16,6 +21,7 @@ export function AgendaView({
   userId,
   initialEvents,
   collaborators,
+  collaboratorMeta,
 }: Props) {
   const [filterId, setFilterId] = useState<string | null>(null);
 
@@ -48,6 +54,7 @@ export function AgendaView({
         userId={userId}
         initialEvents={initialEvents}
         collaborators={collaborators}
+        collaboratorMeta={collaboratorMeta}
         collaboratorFilterId={filterId}
       />
     </div>

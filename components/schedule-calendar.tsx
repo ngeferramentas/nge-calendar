@@ -23,7 +23,12 @@ import {
   rejectEvent,
   updateEvent,
 } from "@/app/actions/events";
-import type { EventRow, EventStatus, UserRole } from "@/lib/types/database";
+import type {
+  CollaboratorCalendarMeta,
+  EventRow,
+  EventStatus,
+  UserRole,
+} from "@/lib/types/database";
 import { eventStatusColor, EVENT_STATUS_LABELS } from "@/lib/types/database";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { ClientCombobox } from "@/components/client-combobox";
@@ -94,6 +99,46 @@ function zdtToIso(z: Temporal.ZonedDateTime | Temporal.PlainDate): string {
     .toString();
 }
 
+function mixWithWhite(hex: string, ratio: number): string {
+  const m = /^#([0-9A-Fa-f]{6})$/.exec(hex.trim());
+  if (!m) return "#E8F0FE";
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  const mix = (c: number) => Math.round(c + (255 - c) * ratio);
+  const R = mix(r);
+  const G = mix(g);
+  const B = mix(b);
+  return `#${R.toString(16).padStart(2, "0")}${G.toString(16).padStart(2, "0")}${B.toString(16).padStart(2, "0")}`.toUpperCase();
+}
+
+function collaboratorCalendarFromHex(
+  main: string,
+  access: UserRole,
+): CalendarType {
+  const readonly = access === "collaborator";
+  const container = mixWithWhite(main, 0.88);
+  return {
+    colorName: "custom",
+    lightColors: { main, container, onContainer: "#333" },
+    darkColors: { main, container, onContainer: "#333" },
+    readonly,
+  };
+}
+
+function eventCalendarId(e: EventRow): string {
+  const hex = e.collaborator_profile?.calendar_color?.trim();
+  if (
+    e.collaborator_id &&
+    hex &&
+    /^#[0-9A-Fa-f]{6}$/i.test(hex)
+  ) {
+    return `collab_${e.collaborator_id}`;
+  }
+  return e.status;
+}
+
 function mapRowsToCalendarEvents(rows: EventRow[]): CalendarEvent[] {
   return rows.map((e) => {
     const clientLabel = e.clients?.full_name
@@ -107,7 +152,7 @@ function mapRowsToCalendarEvents(rows: EventRow[]): CalendarEvent[] {
       title,
       start: toZdt(e.starts_at),
       end: toZdt(e.ends_at),
-      calendarId: e.status,
+      calendarId: eventCalendarId(e),
       description: e.description,
     };
   });
@@ -178,11 +223,65 @@ function holidayEntriesToCalendarEvents(entries: HolidayEntry[]): CalendarEvent[
   });
 }
 
+function birthdayEntriesToCalendarEvents(
+  meta: CollaboratorCalendarMeta[],
+  years: number[],
+): CalendarEvent[] {
+  const out: CalendarEvent[] = [];
+  for (const m of meta) {
+    if (!m.birth_date) continue;
+    let orig: Temporal.PlainDate;
+    try {
+      orig = Temporal.PlainDate.from(m.birth_date.slice(0, 10));
+    } catch {
+      continue;
+    }
+    const month = orig.month;
+    const day = orig.day;
+    for (const year of years) {
+      let date: Temporal.PlainDate;
+      try {
+        date = Temporal.PlainDate.from({ year, month, day });
+      } catch {
+        if (month === 2 && day === 29) {
+          try {
+            date = Temporal.PlainDate.from({ year, month: 2, day: 28 });
+          } catch {
+            continue;
+          }
+        } else {
+          continue;
+        }
+      }
+      const start = Temporal.ZonedDateTime.from({
+        year: date.year,
+        month: date.month,
+        day: date.day,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        timeZone: TZ,
+      });
+      const end = start.add({ days: 1 });
+      out.push({
+        id: `birthday:${m.id}:${year}`,
+        title: `Aniversário · ${m.full_name}`,
+        start,
+        end,
+        calendarId: `collab_${m.id}`,
+        description: "Aniversário do colaborador",
+      });
+    }
+  }
+  return out;
+}
+
 type Props = {
   access: UserRole;
   userId: string;
   initialEvents: EventRow[];
-  collaborators: { id: string; full_name: string }[];
+  collaborators: { id: string; full_name: string; calendar_color?: string }[];
+  collaboratorMeta: CollaboratorCalendarMeta[];
   collaboratorFilterId?: string | null;
 };
 
@@ -191,6 +290,7 @@ export function ScheduleCalendar({
   userId,
   initialEvents,
   collaborators,
+  collaboratorMeta,
   collaboratorFilterId = null,
 }: Props) {
   const [rows, setRows] = useState<EventRow[]>(initialEvents);
@@ -316,7 +416,22 @@ export function ScheduleCalendar({
     };
   }, []);
 
-  const calendars = useMemo(() => calendarsByAccess(access), [access]);
+  const birthdayEvents = useMemo(() => {
+    const nowYear = Temporal.Now.plainDateISO().year;
+    const years = [nowYear, nowYear + 1];
+    return birthdayEntriesToCalendarEvents(collaboratorMeta, years);
+  }, [collaboratorMeta]);
+
+  const calendars = useMemo(() => {
+    const base = calendarsByAccess(access);
+    const next: Record<string, CalendarType> = { ...base };
+    for (const c of collaboratorMeta) {
+      const raw = c.calendar_color?.trim() ?? "#4285F4";
+      const safeHex = /^#[0-9A-Fa-f]{6}$/i.test(raw) ? raw : "#4285F4";
+      next[`collab_${c.id}`] = collaboratorCalendarFromHex(safeHex, access);
+    }
+    return next;
+  }, [access, collaboratorMeta]);
 
   const calendarApp = useNextCalendarApp({
     theme: "default",
@@ -337,16 +452,25 @@ export function ScheduleCalendar({
     },
     callbacks: {
       onEventClick: (calEvent) => {
-        if (String(calEvent.id).startsWith("holiday:")) return;
-        const row = rowsRef.current.find((r) => r.id === String(calEvent.id));
+        const sid = String(calEvent.id);
+        if (sid.startsWith("holiday:")) return;
+        if (sid.startsWith("birthday:")) return;
+        const row = rowsRef.current.find((r) => r.id === sid);
         if (!row) return;
         setDetailOpen(row);
       },
-      onBeforeEventUpdate: (calEvent) =>
-        access === "admin" && !String(calEvent.id).startsWith("holiday:"),
+      onBeforeEventUpdate: (calEvent) => {
+        const sid = String(calEvent.id);
+        return (
+          access === "admin" &&
+          !sid.startsWith("holiday:") &&
+          !sid.startsWith("birthday:")
+        );
+      },
       onEventUpdate: async (calEvent) => {
         if (access !== "admin") return;
         const id = String(calEvent.id);
+        if (id.startsWith("holiday:") || id.startsWith("birthday:")) return;
         const starts = zdtToIso(calEvent.start);
         const ends = zdtToIso(calEvent.end);
         const res = await updateEvent({ id, startsAt: starts, endsAt: ends });
@@ -392,8 +516,9 @@ export function ScheduleCalendar({
     calendarApp.events.set([
       ...mapRowsToCalendarEvents(rows),
       ...holidayEvents,
+      ...birthdayEvents,
     ]);
-  }, [calendarApp, holidayEvents, rows]);
+  }, [birthdayEvents, calendarApp, holidayEvents, rows]);
 
   async function handleCreateSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -529,7 +654,7 @@ export function ScheduleCalendar({
         >
           Novo evento
         </button>
-        <div className="flex flex-wrap gap-3 text-xs text-zinc-600">
+        <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-600">
           {(Object.keys(EVENT_STATUS_LABELS) as EventStatus[]).map((s) => (
             <span key={s} className="inline-flex items-center gap-1">
               <span
@@ -539,6 +664,9 @@ export function ScheduleCalendar({
               {EVENT_STATUS_LABELS[s]}
             </span>
           ))}
+          <span className="text-zinc-500">
+            Eventos com colaborador usam a cor definida no cadastro da equipe.
+          </span>
         </div>
       </div>
 
