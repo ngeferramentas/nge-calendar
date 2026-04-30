@@ -75,7 +75,7 @@ export async function searchClients(query: string): Promise<ActionResult<ClientR
 export async function createClient(raw: unknown): Promise<ActionResult<{ id: string }>> {
   try {
     const ctx = await getSessionContext();
-    const admin = requireAdmin(ctx);
+    if (!ctx) return { ok: false, error: "Não autenticado." };
 
     const parsed = clientUpsertSchema.safeParse(raw);
     if (!parsed.success) {
@@ -98,7 +98,7 @@ export async function createClient(raw: unknown): Promise<ActionResult<{ id: str
         city: d.city,
         state: d.state,
         postal_code: d.postalCode,
-        created_by: admin.userId,
+        created_by: ctx.userId,
       })
       .select("id")
       .single();

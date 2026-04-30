@@ -33,10 +33,16 @@ import { eventStatusColor, EVENT_STATUS_LABELS } from "@/lib/types/database";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { ClientCombobox } from "@/components/client-combobox";
 import { CollaboratorCombobox } from "@/components/collaborator-combobox";
+import { ClientCreateModal } from "@/components/client-create-modal";
 import type { ClientRow } from "@/lib/types/database";
 import { Trash2, X } from "lucide-react";
 
 const TZ = process.env.NEXT_PUBLIC_APP_TIMEZONE ?? "America/Sao_Paulo";
+const VISIBLE_STATUS_LEGEND: EventStatus[] = [
+  "pending_approval",
+  "approved",
+  "assigned",
+];
 
 type BrasilApiHoliday = {
   date: string;
@@ -144,12 +150,14 @@ function mapRowsToCalendarEvents(rows: EventRow[]): CalendarEvent[] {
     const clientLabel = e.clients?.full_name
       ? `${e.clients.full_name} (${e.clients.document_normalized})`
       : e.client_id;
+    const collaboratorName = e.collaborator_profile?.full_name?.trim();
     const title =
       e.title?.trim() ||
       `${EVENT_STATUS_LABELS[e.status]} · ${clientLabel}`;
+    const badge = collaboratorName ? ` · ${collaboratorName}` : "";
     return {
       id: e.id,
-      title,
+      title: `${title}${badge}`,
       start: toZdt(e.starts_at),
       end: toZdt(e.ends_at),
       calendarId: eventCalendarId(e),
@@ -211,14 +219,13 @@ function holidayEntriesToCalendarEvents(entries: HolidayEntry[]): CalendarEvent[
       timeZone: TZ,
     });
     const end = start.add({ days: 1 });
-    const sourceLabel = h.source === "municipal" ? "Uberlândia/MG" : "Nacional";
     return {
       id: `holiday:${h.date}:${h.name}`,
-      title: `Feriado (${sourceLabel}) · ${h.name}`,
+      title: h.name,
       start,
       end,
       calendarId: "holiday",
-      description: `Feriado ${sourceLabel}`,
+      description: "Feriado",
     };
   });
 }
@@ -310,6 +317,7 @@ export function ScheduleCalendar({
   const [formStart, setFormStart] = useState("");
   const [formEnd, setFormEnd] = useState("");
   const [saving, setSaving] = useState(false);
+  const [clientModalOpen, setClientModalOpen] = useState(false);
   const [holidayEvents, setHolidayEvents] = useState<CalendarEvent[]>([]);
   const rowsRef = useRef(rows);
   const skipFilterRefresh = useRef(true);
@@ -331,6 +339,29 @@ export function ScheduleCalendar({
       dateStyle: "short",
       timeStyle: "short",
     });
+  }, []);
+
+  const prefillCreateDate = useCallback((date: Temporal.PlainDate) => {
+    const start = Temporal.ZonedDateTime.from({
+      year: date.year,
+      month: date.month,
+      day: date.day,
+      hour: 9,
+      minute: 0,
+      second: 0,
+      timeZone: TZ,
+    });
+    const end = start.add({ minutes: 30 });
+    const format = (zdt: Temporal.ZonedDateTime) => {
+      const yyyy = String(zdt.year);
+      const mm = String(zdt.month).padStart(2, "0");
+      const dd = String(zdt.day).padStart(2, "0");
+      const hh = String(zdt.hour).padStart(2, "0");
+      const mi = String(zdt.minute).padStart(2, "0");
+      return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+    };
+    setFormStart(format(start));
+    setFormEnd(format(end));
   }, []);
 
   useEffect(() => {
@@ -458,6 +489,24 @@ export function ScheduleCalendar({
         const row = rowsRef.current.find((r) => r.id === sid);
         if (!row) return;
         setDetailOpen(row);
+      },
+      onClickDate: (date) => {
+        prefillCreateDate(date);
+        setCreateOpen(true);
+      },
+      onClickDateTime: (dateTime) => {
+        const end = dateTime.add({ minutes: 30 });
+        const format = (zdt: Temporal.ZonedDateTime) => {
+          const yyyy = String(zdt.year);
+          const mm = String(zdt.month).padStart(2, "0");
+          const dd = String(zdt.day).padStart(2, "0");
+          const hh = String(zdt.hour).padStart(2, "0");
+          const mi = String(zdt.minute).padStart(2, "0");
+          return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+        };
+        setFormStart(format(dateTime));
+        setFormEnd(format(end));
+        setCreateOpen(true);
       },
       onBeforeEventUpdate: (calEvent) => {
         const sid = String(calEvent.id);
@@ -654,8 +703,15 @@ export function ScheduleCalendar({
         >
           Novo evento
         </button>
+        <button
+          type="button"
+          onClick={() => setClientModalOpen(true)}
+          className="rounded-lg bg-[#4285F4] px-4 py-2 text-sm font-medium text-white hover:opacity-95"
+        >
+          Novo cliente
+        </button>
         <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-600">
-          {(Object.keys(EVENT_STATUS_LABELS) as EventStatus[]).map((s) => (
+          {VISIBLE_STATUS_LEGEND.map((s) => (
             <span key={s} className="inline-flex items-center gap-1">
               <span
                 className="inline-block h-3 w-3 rounded-full"
@@ -770,6 +826,15 @@ export function ScheduleCalendar({
         </div>
       )}
 
+      <ClientCreateModal
+        open={clientModalOpen}
+        onOpenChange={setClientModalOpen}
+        onCreated={(client: ClientRow) => {
+          setFormClient(client);
+          setCreateOpen(true);
+        }}
+      />
+
       {detailOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 p-4">
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
@@ -793,6 +858,19 @@ export function ScheduleCalendar({
                 <span className="font-medium text-zinc-900">Status:</span>{" "}
                 {EVENT_STATUS_LABELS[detailOpen.status]}
               </p>
+              {detailOpen.collaborator_id && (
+                <p className="flex items-center gap-2">
+                  <span className="font-medium text-zinc-900">Colaborador:</span>
+                  <span
+                    className="inline-block h-3 w-3 rounded-full"
+                    style={{
+                      backgroundColor:
+                        detailOpen.collaborator_profile?.calendar_color ?? "#4285F4",
+                    }}
+                  />
+                  {detailOpen.collaborator_profile?.full_name ?? detailOpen.collaborator_id}
+                </p>
+              )}
               {detailOpen.description?.trim() && (
                 <p>
                   <span className="font-medium text-zinc-900">Descrição:</span>{" "}

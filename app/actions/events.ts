@@ -2,7 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { appendAuditLog } from "@/lib/audit";
-import { requireAdmin, getSessionContext } from "@/lib/auth/session";
+import {
+  requireAdmin,
+  getSessionContext,
+  requireUserManager,
+} from "@/lib/auth/session";
 import { assertNoTimeOverlap } from "@/lib/events/overlap";
 import { scheduleEventReminder } from "@/lib/reminders/qstash";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -40,17 +44,51 @@ async function notifyCollaboratorAssignment(params: {
   createdBy: string;
   eventId: string;
   title: string;
+  messageOverride?: string;
 }): Promise<void> {
   if (params.recipientId === params.createdBy) return;
-  const message = params.title
-    ? `Novo agendamento: ${params.title}`
-    : "Você recebeu um novo agendamento.";
+  const message =
+    params.messageOverride ??
+    (params.title
+      ? `Novo agendamento: ${params.title}`
+      : "Você recebeu um novo agendamento.");
   await params.supabase.from("notifications").insert({
     recipient_id: params.recipientId,
     created_by: params.createdBy,
     event_id: params.eventId,
     message,
   });
+}
+
+async function notifyManagersForPendingApproval(params: {
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
+  createdBy: string;
+  eventId: string;
+  title: string;
+}): Promise<void> {
+  const { data: managers, error } = await params.supabase
+    .from("profiles")
+    .select("id")
+    .eq("role", "admin")
+    .eq("can_manage_users", true);
+  if (error || !managers?.length) return;
+
+  const message = params.title
+    ? `Novo agendamento pendente: ${params.title}`
+    : "Novo agendamento pendente de aprovação.";
+
+  const rows = managers
+    .map((m) => m.id)
+    .filter((id) => id !== params.createdBy)
+    .map((recipientId) => ({
+      recipient_id: recipientId,
+      created_by: params.createdBy,
+      event_id: params.eventId,
+      message,
+    }));
+
+  if (rows.length === 0) return;
+  await params.supabase.from("notifications").insert(rows);
 }
 
 export async function createEvent(
@@ -106,9 +144,7 @@ export async function createEvent(
         assignedAt = new Date().toISOString();
         approvedBy = ctx.userId;
         approvedAt = assignedAt;
-      } else {
-        status = input.status ?? "confirmed";
-      }
+      } else status = input.status ?? "approved";
     }
 
     await assertNoTimeOverlap(supabase, {
@@ -181,8 +217,17 @@ export async function createEvent(
         title: input.title ?? "",
       });
     }
+    if (!isAdmin && status === "pending_approval") {
+      await notifyManagersForPendingApproval({
+        supabase,
+        createdBy: ctx.userId,
+        eventId: data.id,
+        title: input.title ?? "",
+      });
+    }
 
     revalidatePath("/agenda");
+    revalidatePath("/acoes");
     return { ok: true, data: { id: data.id } };
   } catch (e) {
     // #region agent log
@@ -261,7 +306,9 @@ export async function updateEvent(raw: unknown): Promise<ActionResult> {
     if (patch.endsAt !== undefined) updates.ends_at = patch.endsAt;
     if (patch.status !== undefined) updates.status = patch.status;
 
-    if (nextStatus === "assigned" && !row.approved_at) {
+    const shouldSetApproved =
+      (nextStatus === "approved" || nextStatus === "assigned") && !row.approved_at;
+    if (shouldSetApproved) {
       updates.approved_by = adminCtx.userId;
       updates.approved_at = new Date().toISOString();
     }
@@ -304,6 +351,7 @@ export async function updateEvent(raw: unknown): Promise<ActionResult> {
     }
 
     revalidatePath("/agenda");
+    revalidatePath("/acoes");
     return { ok: true };
   } catch (e) {
     return { ok: false, error: err(e) };
@@ -382,9 +430,11 @@ export async function approveAndAssignEvent(
       createdBy: ctx!.userId,
       eventId,
       title: row.title,
+      messageOverride: "Seu agendamento foi aprovado.",
     });
 
     revalidatePath("/agenda");
+    revalidatePath("/acoes");
     return { ok: true };
   } catch (e) {
     return { ok: false, error: err(e) };
@@ -412,6 +462,7 @@ export async function rejectEvent(eventId: string): Promise<ActionResult> {
     });
 
     revalidatePath("/agenda");
+    revalidatePath("/acoes");
     return { ok: true };
   } catch (e) {
     return { ok: false, error: err(e) };
@@ -435,6 +486,7 @@ export async function deleteEvent(eventId: string): Promise<ActionResult> {
     });
 
     revalidatePath("/agenda");
+    revalidatePath("/acoes");
     return { ok: true };
   } catch (e) {
     return { ok: false, error: err(e) };
@@ -451,7 +503,7 @@ export async function listEventsForUser(params?: {
     const supabase = await createSupabaseServerClient();
 
     const eventSelect =
-      "*, clients(full_name, document_normalized), collaborator_profile:profiles!events_collaborator_id_fkey(calendar_color)";
+      "*, clients(full_name, document_normalized), collaborator_profile:profiles!events_collaborator_id_fkey(calendar_color, full_name)";
 
     if (ctx.profile.role === "collaborator") {
       const { data, error } = await supabase
@@ -472,6 +524,32 @@ export async function listEventsForUser(params?: {
     const { data, error } = await q;
     if (error) throw error;
     return { ok: true, data: (data ?? []) as EventRow[] };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
+
+export async function listPendingApprovalEvents(): Promise<ActionResult<EventRow[]>> {
+  try {
+    const ctx = await getSessionContext();
+    if (!ctx) return { ok: false, error: "Não autenticado." };
+    requireUserManager(ctx);
+
+    const supabase = await createSupabaseServerClient();
+    const eventSelect =
+      "*, clients(full_name, document_normalized), collaborator_profile:profiles!events_collaborator_id_fkey(calendar_color, full_name), creator_profile:profiles!events_created_by_fkey(role, full_name)";
+
+    const { data, error } = await supabase
+      .from("events")
+      .select(eventSelect)
+      .eq("status", "pending_approval")
+      .order("starts_at");
+    if (error) throw error;
+
+    const rows = ((data ?? []) as (EventRow & {
+      creator_profile?: { role?: string } | null;
+    })[]).filter((row) => row.creator_profile?.role === "collaborator");
+    return { ok: true, data: rows };
   } catch (e) {
     return { ok: false, error: err(e) };
   }

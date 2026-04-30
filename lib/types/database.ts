@@ -5,8 +5,8 @@ export type DocumentType = "cpf" | "cnpj";
 export type EventStatus =
   | "pending_approval"
   | "approved"
-  | "confirmed"
   | "assigned"
+  | "confirmed"
   | "rejected";
 
 export type ProfileRow = {
@@ -59,7 +59,7 @@ export type EventRow = {
   assigned_at: string | null;
   reminder_sent_at: string | null;
   clients?: { full_name: string; document_normalized: string } | null;
-  collaborator_profile?: { calendar_color: string } | null;
+  collaborator_profile?: { calendar_color: string; full_name?: string } | null;
 };
 
 export type AuditLogRow = {
@@ -85,9 +85,9 @@ export type NotificationRow = {
 export const EVENT_STATUS_LABELS: Record<EventStatus, string> = {
   pending_approval: "Pendente",
   approved: "Aprovado",
-  confirmed: "Confirmado",
+  confirmed: "Aprovado",
   assigned: "Atribuído",
-  rejected: "Rejeitado",
+  rejected: "Recusado",
 };
 
 export const GOOGLE_PALETTE = {

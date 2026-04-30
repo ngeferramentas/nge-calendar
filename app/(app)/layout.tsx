@@ -6,7 +6,7 @@ import { NotificationBell } from "@/components/notification-bell";
 
 export const dynamic = "force-dynamic";
 import { getSessionContext } from "@/lib/auth/session";
-import { Calendar, LogOut, Users, UserCog } from "lucide-react";
+import { BellRing, Calendar, LogOut, Users, UserCog } from "lucide-react";
 
 export default async function AppLayout({
   children,
@@ -41,6 +41,15 @@ export default async function AppLayout({
             >
               <Users className="h-4 w-4" />
               Clientes
+            </Link>
+          )}
+          {canManage && (
+            <Link
+              href="/acoes"
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-zinc-700 hover:bg-zinc-50"
+            >
+              <BellRing className="h-4 w-4" />
+              Ações
             </Link>
           )}
           {canManage && (
