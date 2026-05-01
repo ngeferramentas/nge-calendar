@@ -56,6 +56,11 @@ export function AgendaView({
         collaborators={collaborators}
         collaboratorMeta={collaboratorMeta}
         collaboratorFilterId={filterId}
+        onEventCreated={(assignedCollaboratorId) => {
+          setFilterId((fid) =>
+            fid !== null && fid !== assignedCollaboratorId ? null : fid,
+          );
+        }}
       />
     </div>
   );

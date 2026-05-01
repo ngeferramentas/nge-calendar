@@ -294,6 +294,8 @@ type Props = {
   collaborators: { id: string; full_name: string; calendar_color?: string }[];
   collaboratorMeta: CollaboratorCalendarMeta[];
   collaboratorFilterId?: string | null;
+  /** When admin’s calendar filter excludes the newly assigned collaborator, parent clears the filter. */
+  onEventCreated?: (assignedCollaboratorId: string) => void;
 };
 
 export function ScheduleCalendar({
@@ -303,6 +305,7 @@ export function ScheduleCalendar({
   collaborators,
   collaboratorMeta,
   collaboratorFilterId = null,
+  onEventCreated,
 }: Props) {
   const [rows, setRows] = useState<EventRow[]>(initialEvents);
   const [banner, setBanner] = useState<string | null>(null);
@@ -325,17 +328,28 @@ export function ScheduleCalendar({
   const rowsRef = useRef(rows);
   const skipFilterRefresh = useRef(true);
 
-  const refresh = useCallback(async () => {
-    const res = await listEventsForUser({
-      collaboratorFilterId:
-        access === "admin" ? collaboratorFilterId : undefined,
-    });
-    if (!res.ok) {
-      setBanner(res.error);
-      return;
-    }
-    if (res.data) setRows(res.data);
-  }, [access, collaboratorFilterId]);
+  const refresh = useCallback(
+    async (opts?: {
+      collaboratorFilterId?: string | null;
+    }): Promise<boolean> => {
+      const listFilter =
+        access === "admin"
+          ? opts?.collaboratorFilterId !== undefined
+            ? opts.collaboratorFilterId ?? undefined
+            : collaboratorFilterId ?? undefined
+          : undefined;
+      const res = await listEventsForUser({
+        collaboratorFilterId: listFilter,
+      });
+      if (!res.ok) {
+        setBanner(res.error);
+        return false;
+      }
+      if (res.data) setRows(res.data);
+      return true;
+    },
+    [access, collaboratorFilterId],
+  );
 
   const prefillCreateDate = useCallback((date: Temporal.PlainDate) => {
     setFormAdminOnly(false);
@@ -596,6 +610,28 @@ export function ScheduleCalendar({
         alert(res.error);
         return;
       }
+
+      const assignedId = formCollaborator.id;
+      const filterMismatch =
+        access === "admin" &&
+        collaboratorFilterId !== null &&
+        collaboratorFilterId !== assignedId;
+
+      if (filterMismatch) {
+        onEventCreated?.(assignedId);
+      }
+
+      const refreshed = filterMismatch
+        ? await refresh({ collaboratorFilterId: null })
+        : await refresh();
+
+      if (!refreshed) {
+        alert(
+          "O evento foi criado, mas não foi possível atualizar a lista. Atualize a página.",
+        );
+        return;
+      }
+
       setCreateOpen(false);
       setFormTitle("");
       setFormDesc("");
@@ -604,7 +640,6 @@ export function ScheduleCalendar({
       setFormStart("");
       setFormEnd("");
       setFormAdminOnly(false);
-      await refresh();
     } catch {
       alert("Não foi possível criar o evento agora.");
     } finally {
