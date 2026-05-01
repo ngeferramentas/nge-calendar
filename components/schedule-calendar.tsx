@@ -66,19 +66,25 @@ const UBERLANDIA_MUNICIPAL_HOLIDAYS = [
 
 function calendarsByAccess(access: UserRole): Record<string, CalendarType> {
   const readonly = access === "collaborator";
-  const base = (main: string, container: string, on: string): CalendarType => ({
-    colorName: "custom",
+  /** colorName must be unique: Schedule-X sets global CSS vars `--sx-color-${colorName}`. */
+  const base = (
+    colorName: string,
+    main: string,
+    container: string,
+    on: string,
+  ): CalendarType => ({
+    colorName,
     lightColors: { main, container, onContainer: on },
     darkColors: { main, container, onContainer: on },
     readonly,
   });
 
   return {
-    pending_approval: base("#F4B400", "#FFF8E1", "#333"),
-    approved: base("#4285F4", "#E8F0FE", "#333"),
-    confirmed: base("#4285F4", "#E8F0FE", "#333"),
-    assigned: base("#0F9D58", "#E6F4EA", "#333"),
-    rejected: base("#DB4437", "#FDECEA", "#333"),
+    pending_approval: base("pending_approval", "#F4B400", "#FFF8E1", "#333"),
+    approved: base("approved", "#4285F4", "#E8F0FE", "#333"),
+    confirmed: base("confirmed", "#4285F4", "#E8F0FE", "#333"),
+    assigned: base("assigned", "#0F9D58", "#E6F4EA", "#333"),
+    rejected: base("rejected", "#DB4437", "#FDECEA", "#333"),
     holiday: {
       colorName: "holiday",
       lightColors: { main: "#7E57C2", container: "#F3E8FF", onContainer: "#2D1B45" },
@@ -126,30 +132,42 @@ function mixWithWhite(hex: string, ratio: number): string {
 function collaboratorCalendarFromHex(
   main: string,
   access: UserRole,
+  colorName: string,
 ): CalendarType {
   const readonly = access === "collaborator";
   const container = mixWithWhite(main, 0.88);
   return {
-    colorName: "custom",
+    colorName,
     lightColors: { main, container, onContainer: "#333" },
     darkColors: { main, container, onContainer: "#333" },
     readonly,
   };
 }
 
-function eventCalendarId(e: EventRow): string {
-  const hex = e.collaborator_profile?.calendar_color?.trim();
-  if (
-    e.collaborator_id &&
-    hex &&
-    /^#[0-9A-Fa-f]{6}$/i.test(hex)
-  ) {
-    return `collab_${e.collaborator_id}`;
-  }
+function eventCalendarId(
+  e: EventRow,
+  metaColorByCollaboratorId: ReadonlyMap<string, string>,
+): string {
+  const cid = e.collaborator_id;
+  if (!cid) return e.status;
+
+  const fromEmbed = e.collaborator_profile?.calendar_color?.trim();
+  const fromMeta = metaColorByCollaboratorId.get(cid)?.trim();
+  const hex =
+    fromEmbed && /^#[0-9A-Fa-f]{6}$/i.test(fromEmbed)
+      ? fromEmbed
+      : fromMeta && /^#[0-9A-Fa-f]{6}$/i.test(fromMeta)
+        ? fromMeta
+        : undefined;
+  if (hex) return `collab_${cid}`;
   return e.status;
 }
 
-function mapRowsToCalendarEvents(rows: EventRow[], access: UserRole): CalendarEvent[] {
+function mapRowsToCalendarEvents(
+  rows: EventRow[],
+  access: UserRole,
+  metaColorByCollaboratorId: ReadonlyMap<string, string>,
+): CalendarEvent[] {
   return rows.map((e) => {
     const clientLabel = e.clients?.full_name
       ? `${e.clients.full_name} (${e.clients.document_normalized})`
@@ -166,7 +184,7 @@ function mapRowsToCalendarEvents(rows: EventRow[], access: UserRole): CalendarEv
       title: `${title}${badge}${privateTag}`,
       start: toZdt(e.starts_at),
       end: toZdt(e.ends_at),
-      calendarId: eventCalendarId(e),
+      calendarId: eventCalendarId(e, metaColorByCollaboratorId),
       description: e.description,
     };
   });
@@ -435,13 +453,25 @@ export function ScheduleCalendar({
     return birthdayEntriesToCalendarEvents(collaboratorMeta, years);
   }, [collaboratorMeta]);
 
+  const metaColorByCollaboratorId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of collaboratorMeta) {
+      const raw = c.calendar_color?.trim() ?? "";
+      if (raw && /^#[0-9A-Fa-f]{6}$/i.test(raw)) {
+        m.set(c.id, raw);
+      }
+    }
+    return m;
+  }, [collaboratorMeta]);
+
   const calendars = useMemo(() => {
     const base = calendarsByAccess(access);
     const next: Record<string, CalendarType> = { ...base };
     for (const c of collaboratorMeta) {
       const raw = c.calendar_color?.trim() ?? "#4285F4";
       const safeHex = /^#[0-9A-Fa-f]{6}$/i.test(raw) ? raw : "#4285F4";
-      next[`collab_${c.id}`] = collaboratorCalendarFromHex(safeHex, access);
+      const calKey = `collab_${c.id}`;
+      next[calKey] = collaboratorCalendarFromHex(safeHex, access, calKey);
     }
     return next;
   }, [access, collaboratorMeta]);
@@ -522,11 +552,18 @@ export function ScheduleCalendar({
   useEffect(() => {
     if (!calendarApp) return;
     calendarApp.events.set([
-      ...mapRowsToCalendarEvents(rows, access),
+      ...mapRowsToCalendarEvents(rows, access, metaColorByCollaboratorId),
       ...holidayEvents,
       ...birthdayEvents,
     ]);
-  }, [access, birthdayEvents, calendarApp, holidayEvents, rows]);
+  }, [
+    access,
+    birthdayEvents,
+    calendarApp,
+    holidayEvents,
+    metaColorByCollaboratorId,
+    rows,
+  ]);
 
   async function handleCreateSubmit(e: React.FormEvent) {
     e.preventDefault();
