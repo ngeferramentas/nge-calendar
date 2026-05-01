@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { createSupabaseServiceRoleClient } from "@/lib/supabase/service";
 import type { EventStatus } from "@/lib/types/database";
 
 const BLOCKING_GLOBAL: EventStatus[] = ["approved", "confirmed", "assigned"];
@@ -42,9 +43,9 @@ export async function findOverlappingEventIds(
 }
 
 export async function assertNoTimeOverlap(
-  supabase: SupabaseClient,
   params: Parameters<typeof findOverlappingEventIds>[1],
 ): Promise<void> {
+  const supabase = createSupabaseServiceRoleClient();
   const ids = await findOverlappingEventIds(supabase, params);
   if (ids.length > 0) {
     throw new Error(

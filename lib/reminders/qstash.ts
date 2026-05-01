@@ -1,27 +1,7 @@
 import { Client } from "@upstash/qstash";
 
 function appUrl() {
-  const resolved =
-    process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "http://localhost:3000";
-  // #region agent log
-  fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Debug-Session-Id": "f92143",
-    },
-    body: JSON.stringify({
-      sessionId: "f92143",
-      runId: "pre-fix",
-      hypothesisId: "H1",
-      location: "lib/reminders/qstash.ts:appUrl",
-      message: "Resolved app URL for qstash destination",
-      data: { resolved },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-  return resolved;
+  return process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "http://localhost:3000";
 }
 
 function isLoopbackDestination(url: string) {
@@ -59,44 +39,8 @@ export async function scheduleEventReminder(params: {
   const notBefore = Math.max(fireAt, now + 2);
 
   const url = `${appUrl()}/api/webhooks/event-reminder`;
-  // #region agent log
-  fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Debug-Session-Id": "f92143",
-    },
-    body: JSON.stringify({
-      sessionId: "f92143",
-      runId: "pre-fix",
-      hypothesisId: "H1",
-      location: "lib/reminders/qstash.ts:scheduleEventReminder",
-      message: "Publishing reminder to qstash",
-      data: { eventId: params.eventId, url },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
 
   if (isLoopbackDestination(url)) {
-    // #region agent log
-    fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "f92143",
-      },
-      body: JSON.stringify({
-        sessionId: "f92143",
-        runId: "post-fix",
-        hypothesisId: "H1",
-        location: "lib/reminders/qstash.ts:scheduleEventReminder",
-        message: "Skipped qstash publish due to loopback destination",
-        data: { eventId: params.eventId, url },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     return;
   }
 

@@ -106,29 +106,7 @@ export async function createEvent(
     const supabase = await createSupabaseServerClient();
     const isAdmin = ctx.profile.role === "admin";
     const input = parsed.data;
-    // #region agent log
-    fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "f92143",
-      },
-      body: JSON.stringify({
-        sessionId: "f92143",
-        runId: "pre-fix",
-        hypothesisId: "H2",
-        location: "app/actions/events.ts:createEvent",
-        message: "createEvent input received",
-        data: {
-          hasCollaboratorId: Boolean(input.collaboratorId),
-          startsAt: input.startsAt,
-          endsAt: input.endsAt,
-          isAdmin,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
+    const adminOnly = isAdmin && input.adminOnly;
 
     let status: EventStatus;
     const collaboratorId = input.collaboratorId;
@@ -147,7 +125,7 @@ export async function createEvent(
       } else status = input.status ?? "approved";
     }
 
-    await assertNoTimeOverlap(supabase, {
+    await assertNoTimeOverlap({
       startsAt: input.startsAt,
       endsAt: input.endsAt,
       collaboratorId,
@@ -161,6 +139,7 @@ export async function createEvent(
         client_id: input.clientId,
         collaborator_id: collaboratorId,
         created_by: ctx.userId,
+        admin_only: adminOnly,
         status,
         starts_at: input.startsAt,
         ends_at: input.endsAt,
@@ -172,30 +151,12 @@ export async function createEvent(
       .single();
 
     if (error) throw error;
-    // #region agent log
-    fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "f92143",
-      },
-      body: JSON.stringify({
-        sessionId: "f92143",
-        runId: "pre-fix",
-        hypothesisId: "H2",
-        location: "app/actions/events.ts:createEvent",
-        message: "Event inserted in database",
-        data: { eventId: data.id, status, hasCollaboratorId: Boolean(collaboratorId) },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
 
     await appendAuditLog(supabase, {
       entityType: "event",
       entityId: data.id,
       action: "create",
-      metadata: { status, collaboratorId },
+      metadata: { status, collaboratorId, adminOnly },
     });
 
     if (collaboratorId && status === "assigned") {
@@ -208,7 +169,7 @@ export async function createEvent(
         // Reminders should never block event creation.
       }
     }
-    if (collaboratorId && status === "assigned") {
+    if (collaboratorId && status === "assigned" && !adminOnly) {
       await notifyCollaboratorAssignment({
         supabase,
         recipientId: collaboratorId,
@@ -230,24 +191,6 @@ export async function createEvent(
     revalidatePath("/acoes");
     return { ok: true, data: { id: data.id } };
   } catch (e) {
-    // #region agent log
-    fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "f92143",
-      },
-      body: JSON.stringify({
-        sessionId: "f92143",
-        runId: "pre-fix",
-        hypothesisId: "H1",
-        location: "app/actions/events.ts:createEvent:catch",
-        message: "createEvent failed",
-        data: { error: err(e) },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     return { ok: false, error: err(e) };
   }
 }
@@ -283,7 +226,7 @@ export async function updateEvent(raw: unknown): Promise<ActionResult> {
         ? patch.collaboratorId
         : row.collaborator_id;
 
-    await assertNoTimeOverlap(supabase, {
+    await assertNoTimeOverlap({
       startsAt,
       endsAt,
       collaboratorId,
@@ -296,6 +239,7 @@ export async function updateEvent(raw: unknown): Promise<ActionResult> {
     if (patch.title !== undefined) updates.title = patch.title;
     if (patch.description !== undefined) updates.description = patch.description;
     if (patch.clientId !== undefined) updates.client_id = patch.clientId;
+    if (patch.adminOnly !== undefined) updates.admin_only = patch.adminOnly;
     if (patch.collaboratorId !== undefined) {
       updates.collaborator_id = patch.collaboratorId;
       if (patch.collaboratorId && !row.assigned_at) {
@@ -336,10 +280,13 @@ export async function updateEvent(raw: unknown): Promise<ActionResult> {
         }
       }
     }
+    const nextAdminOnly =
+      patch.adminOnly !== undefined ? patch.adminOnly : row.admin_only === true;
     if (
       patch.collaboratorId !== undefined &&
       patch.collaboratorId &&
-      patch.collaboratorId !== row.collaborator_id
+      patch.collaboratorId !== row.collaborator_id &&
+      !nextAdminOnly
     ) {
       await notifyCollaboratorAssignment({
         supabase,
@@ -388,7 +335,7 @@ export async function approveAndAssignEvent(
       return { ok: false, error: "Apenas eventos pendentes podem ser aprovados." };
     }
 
-    await assertNoTimeOverlap(supabase, {
+    await assertNoTimeOverlap({
       startsAt: row.starts_at,
       endsAt: row.ends_at,
       collaboratorId,
@@ -424,14 +371,16 @@ export async function approveAndAssignEvent(
     } catch {
       // Reminders should never block event approval and assignment.
     }
-    await notifyCollaboratorAssignment({
-      supabase,
-      recipientId: collaboratorId,
-      createdBy: ctx!.userId,
-      eventId,
-      title: row.title,
-      messageOverride: "Seu agendamento foi aprovado.",
-    });
+    if (row.admin_only !== true) {
+      await notifyCollaboratorAssignment({
+        supabase,
+        recipientId: collaboratorId,
+        createdBy: ctx!.userId,
+        eventId,
+        title: row.title,
+        messageOverride: "Seu agendamento foi aprovado.",
+      });
+    }
 
     revalidatePath("/agenda");
     revalidatePath("/acoes");
@@ -509,9 +458,7 @@ export async function listEventsForUser(params?: {
       const { data, error } = await supabase
         .from("events")
         .select(eventSelect)
-        .or(
-          `collaborator_id.eq.${ctx.userId},and(created_by.eq.${ctx.userId},status.eq.pending_approval)`,
-        )
+        .eq("admin_only", false)
         .order("starts_at");
       if (error) throw error;
       return { ok: true, data: (data ?? []) as EventRow[] };

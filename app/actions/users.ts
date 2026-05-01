@@ -67,6 +67,10 @@ const searchCollaboratorsSchema = z.object({
   query: z.string().trim().min(1).max(120),
 });
 
+const searchCollaboratorsForAgendaSchema = z.object({
+  query: z.string().trim().max(120).optional().default(""),
+});
+
 function err(e: unknown): string {
   return e instanceof Error ? e.message : "Erro desconhecido";
 }
@@ -83,7 +87,7 @@ export async function listCollaborators(): Promise<
     const { data, error } = await supabase
       .from("profiles")
       .select("id, full_name, calendar_color")
-      .eq("role", "collaborator")
+      .in("role", ["collaborator", "admin"])
       .order("full_name");
 
     if (error) throw error;
@@ -119,13 +123,57 @@ export async function searchCollaborators(
     const { data, error } = await supabase
       .from("profiles")
       .select("id, full_name")
-      .eq("role", "collaborator")
+      .in("role", ["collaborator", "admin"])
       .ilike("full_name", pattern)
       .order("full_name")
       .limit(20);
 
     if (error) throw error;
     return { ok: true, data: (data ?? []) as { id: string; full_name: string }[] };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
+
+/** Lista / filtra colaboradores para a agenda (service role; qualquer usuário autenticado). */
+export async function searchCollaboratorsForAgenda(
+  query: string = "",
+): Promise<
+  ActionResult<{ id: string; full_name: string; role: UserRole }[]>
+> {
+  try {
+    const ctx = await getSessionContext();
+    if (!ctx) return { ok: false, error: "Não autenticado." };
+
+    const parsed = searchCollaboratorsForAgendaSchema.safeParse({ query });
+    if (!parsed.success) {
+      return { ok: false, error: "Busca inválida." };
+    }
+
+    const service = createSupabaseServiceRoleClient();
+    const term = parsed.data.query.trim();
+    let q = service
+      .from("profiles")
+      .select("id, full_name, role")
+      .in("role", ["collaborator", "admin"])
+      .order("full_name")
+      .limit(50);
+
+    if (term.length > 0) {
+      const safe = term.replace(/[%_\\]/g, "");
+      q = q.ilike("full_name", `%${safe}%`);
+    }
+
+    const { data, error } = await q;
+    if (error) throw error;
+    return {
+      ok: true,
+      data: (data ?? []) as {
+        id: string;
+        full_name: string;
+        role: UserRole;
+      }[],
+    };
   } catch (e) {
     return { ok: false, error: err(e) };
   }
@@ -142,7 +190,7 @@ export async function listCollaboratorCalendarMeta(): Promise<
     const { data, error } = await service
       .from("profiles")
       .select("id, full_name, calendar_color, birth_date")
-      .eq("role", "collaborator")
+      .in("role", ["collaborator", "admin"])
       .order("full_name");
 
     if (error) throw error;

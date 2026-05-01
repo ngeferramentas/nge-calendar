@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { createClient } from "@/app/actions/clients";
+import { createClient, updateClient } from "@/app/actions/clients";
+import {
+  maskCep,
+  maskPhoneBr,
+  normalizeCep,
+  normalizeEmailInput,
+  normalizePhoneDigits,
+} from "@/lib/masks/br";
 import type { ClientRow } from "@/lib/types/database";
 
 type ClientForm = {
@@ -14,6 +21,7 @@ type ClientForm = {
   city: string;
   state: string;
   postalCode: string;
+  isActive: boolean;
 };
 
 const INITIAL_FORM: ClientForm = {
@@ -26,15 +34,40 @@ const INITIAL_FORM: ClientForm = {
   city: "",
   state: "",
   postalCode: "",
+  isActive: true,
 };
+
+function rowToForm(c: ClientRow): ClientForm {
+  return {
+    documentType: c.document_type,
+    documentNumber: c.document_normalized,
+    fullName: c.full_name,
+    email: c.email,
+    phone: maskPhoneBr(c.phone),
+    addressLine: c.address_line,
+    city: c.city,
+    state: c.state,
+    postalCode: maskCep(c.postal_code),
+    isActive: c.is_active,
+  };
+}
 
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated?: (client: ClientRow) => void;
+  onUpdated?: () => void;
+  /** When set, modal is in edit mode for this client */
+  clientToEdit?: ClientRow | null;
 };
 
-export function ClientCreateModal({ open, onOpenChange, onCreated }: Props) {
+export function ClientCreateModal({
+  open,
+  onOpenChange,
+  onCreated,
+  onUpdated,
+  clientToEdit = null,
+}: Props) {
   const [saving, setSaving] = useState(false);
   const [cepBusy, setCepBusy] = useState(false);
   const [cepMessage, setCepMessage] = useState<string | null>(null);
@@ -43,7 +76,19 @@ export function ClientCreateModal({ open, onOpenChange, onCreated }: Props) {
 
   useEffect(() => {
     if (!open) return;
-    const cep = form.postalCode.replace(/\D/g, "");
+    if (clientToEdit) {
+      setForm(rowToForm(clientToEdit));
+      lastLookupCepRef.current = normalizeCep(clientToEdit.postal_code);
+    } else {
+      setForm(INITIAL_FORM);
+      lastLookupCepRef.current = "";
+    }
+    setCepMessage(null);
+  }, [open, clientToEdit]);
+
+  useEffect(() => {
+    if (!open) return;
+    const cep = normalizeCep(form.postalCode);
     if (cep.length !== 8) return;
     if (lastLookupCepRef.current === cep) return;
     lastLookupCepRef.current = cep;
@@ -82,9 +127,21 @@ export function ClientCreateModal({ open, onOpenChange, onCreated }: Props) {
     };
   }, [form.postalCode, open]);
 
-  async function handleCreate(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
+    if (clientToEdit) {
+      const res = await updateClient(clientToEdit.id, form);
+      setSaving(false);
+      if (!res.ok) {
+        alert(res.error);
+        return;
+      }
+      onUpdated?.();
+      onOpenChange(false);
+      return;
+    }
+
     const res = await createClient(form);
     setSaving(false);
     if (!res.ok || !res.data?.id) {
@@ -97,12 +154,13 @@ export function ClientCreateModal({ open, onOpenChange, onCreated }: Props) {
       document_type: form.documentType,
       document_normalized: form.documentNumber.replace(/\D/g, ""),
       full_name: form.fullName,
-      email: form.email,
-      phone: form.phone,
+      email: normalizeEmailInput(form.email),
+      phone: normalizePhoneDigits(form.phone),
       address_line: form.addressLine,
       city: form.city,
       state: form.state,
-      postal_code: form.postalCode,
+      postal_code: normalizeCep(form.postalCode),
+      is_active: form.isActive,
       created_by: "",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -117,13 +175,17 @@ export function ClientCreateModal({ open, onOpenChange, onCreated }: Props) {
 
   if (!open) return null;
 
+  const isEdit = Boolean(clientToEdit);
+
   return (
     <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/30 p-4">
       <form
-        onSubmit={handleCreate}
+        onSubmit={handleSubmit}
         className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-xl"
       >
-        <h3 className="mb-4 text-lg font-semibold">Novo cliente</h3>
+        <h3 className="mb-4 text-lg font-semibold">
+          {isEdit ? "Editar cliente" : "Novo cliente"}
+        </h3>
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="mb-1 block text-xs font-medium">Tipo</label>
@@ -165,27 +227,43 @@ export function ClientCreateModal({ open, onOpenChange, onCreated }: Props) {
             <label className="mb-1 block text-xs font-medium">E-mail</label>
             <input
               type="email"
+              inputMode="email"
+              autoComplete="email"
               className="w-full rounded border border-zinc-200 px-2 py-2 text-sm"
               value={form.email}
-              onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+              onChange={(e) =>
+                setForm((f) => ({
+                  ...f,
+                  email: normalizeEmailInput(e.target.value).replace(/\s/g, ""),
+                }))
+              }
             />
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium">Telefone</label>
             <input
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel"
+              placeholder="(00) 00000-0000"
               className="w-full rounded border border-zinc-200 px-2 py-2 text-sm"
               value={form.phone}
-              onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, phone: maskPhoneBr(e.target.value) }))
+              }
             />
           </div>
           <div className="col-span-2">
             <label className="mb-1 block text-xs font-medium">CEP</label>
             <input
+              type="text"
+              inputMode="numeric"
+              placeholder="00000-000"
               className="w-full rounded border border-zinc-200 px-2 py-2 text-sm"
               value={form.postalCode}
               onChange={(e) => {
                 setCepMessage(null);
-                setForm((f) => ({ ...f, postalCode: e.target.value }));
+                setForm((f) => ({ ...f, postalCode: maskCep(e.target.value) }));
               }}
             />
             <p className="mt-1 text-xs text-zinc-500">
@@ -220,6 +298,19 @@ export function ClientCreateModal({ open, onOpenChange, onCreated }: Props) {
               onChange={(e) => setForm((f) => ({ ...f, state: e.target.value }))}
             />
           </div>
+          <div className="col-span-2">
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-zinc-800">
+              <input
+                type="checkbox"
+                checked={!form.isActive}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, isActive: !e.target.checked }))
+                }
+                className="rounded border-zinc-300"
+              />
+              Cliente inativo
+            </label>
+          </div>
         </div>
         <div className="mt-6 flex justify-end gap-2">
           <button
@@ -234,7 +325,7 @@ export function ClientCreateModal({ open, onOpenChange, onCreated }: Props) {
             disabled={saving}
             className="rounded-lg bg-[#0F9D58] px-4 py-2 text-sm text-white disabled:opacity-50"
           >
-            Salvar
+            {saving ? "Salvando…" : isEdit ? "Atualizar" : "Salvar"}
           </button>
         </div>
       </form>

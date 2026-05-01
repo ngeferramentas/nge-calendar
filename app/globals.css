@@ -1,5 +1,20 @@
 @import "tailwindcss";
 
+@layer base {
+  button:not(:disabled),
+  select:not(:disabled),
+  summary {
+    cursor: pointer;
+  }
+  button:disabled,
+  select:disabled {
+    cursor: not-allowed;
+  }
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;

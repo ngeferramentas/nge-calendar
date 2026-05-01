@@ -39,6 +39,8 @@ export type ClientRow = {
   city: string;
   state: string;
   postal_code: string;
+  /** false = deactivated in CRM; still returned by searchClients for event creation */
+  is_active: boolean;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -51,6 +53,8 @@ export type EventRow = {
   client_id: string;
   collaborator_id: string | null;
   created_by: string;
+  /** When true, only admins can read this event (RLS + listEventsForUser). */
+  admin_only?: boolean;
   status: EventStatus;
   starts_at: string;
   ends_at: string;

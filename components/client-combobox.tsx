@@ -66,6 +66,9 @@ export function ClientCombobox({ value, onChange, disabled }: Props) {
                 }}
               >
                 <span className="font-medium">{c.full_name}</span>
+                {!c.is_active ? (
+                  <span className="ml-1 text-xs font-normal text-zinc-500">(inativo)</span>
+                ) : null}
                 <span className="block text-xs text-zinc-500">
                   {c.document_type.toUpperCase()} {c.document_normalized} · {c.email}{" "}
                   {c.phone}

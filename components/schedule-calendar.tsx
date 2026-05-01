@@ -32,9 +32,13 @@ import type {
 import { eventStatusColor, EVENT_STATUS_LABELS } from "@/lib/types/database";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { ClientCombobox } from "@/components/client-combobox";
-import { CollaboratorCombobox } from "@/components/collaborator-combobox";
+import {
+  CollaboratorCombobox,
+  type CollaboratorOption,
+} from "@/components/collaborator-combobox";
 import { ClientCreateModal } from "@/components/client-create-modal";
 import type { ClientRow } from "@/lib/types/database";
+import { formatDateTimePtBr } from "@/lib/format/locale";
 import { Trash2, X } from "lucide-react";
 
 const TZ = process.env.NEXT_PUBLIC_APP_TIMEZONE ?? "America/Sao_Paulo";
@@ -145,7 +149,7 @@ function eventCalendarId(e: EventRow): string {
   return e.status;
 }
 
-function mapRowsToCalendarEvents(rows: EventRow[]): CalendarEvent[] {
+function mapRowsToCalendarEvents(rows: EventRow[], access: UserRole): CalendarEvent[] {
   return rows.map((e) => {
     const clientLabel = e.clients?.full_name
       ? `${e.clients.full_name} (${e.clients.document_normalized})`
@@ -155,9 +159,11 @@ function mapRowsToCalendarEvents(rows: EventRow[]): CalendarEvent[] {
       e.title?.trim() ||
       `${EVENT_STATUS_LABELS[e.status]} · ${clientLabel}`;
     const badge = collaboratorName ? ` · ${collaboratorName}` : "";
+    const privateTag =
+      access === "admin" && e.admin_only === true ? " · [só admins]" : "";
     return {
       id: e.id,
-      title: `${title}${badge}`,
+      title: `${title}${badge}${privateTag}`,
       start: toZdt(e.starts_at),
       end: toZdt(e.ends_at),
       calendarId: eventCalendarId(e),
@@ -209,21 +215,11 @@ async function fetchUberlandiaHolidaysFromApi(year: number): Promise<HolidayEntr
 function holidayEntriesToCalendarEvents(entries: HolidayEntry[]): CalendarEvent[] {
   return entries.map((h) => {
     const day = Temporal.PlainDate.from(h.date);
-    const start = Temporal.ZonedDateTime.from({
-      year: day.year,
-      month: day.month,
-      day: day.day,
-      hour: 0,
-      minute: 0,
-      second: 0,
-      timeZone: TZ,
-    });
-    const end = start.add({ days: 1 });
     return {
       id: `holiday:${h.date}:${h.name}`,
       title: h.name,
-      start,
-      end,
+      start: day,
+      end: day,
       calendarId: "holiday",
       description: "Feriado",
     };
@@ -260,21 +256,11 @@ function birthdayEntriesToCalendarEvents(
           continue;
         }
       }
-      const start = Temporal.ZonedDateTime.from({
-        year: date.year,
-        month: date.month,
-        day: date.day,
-        hour: 0,
-        minute: 0,
-        second: 0,
-        timeZone: TZ,
-      });
-      const end = start.add({ days: 1 });
       out.push({
         id: `birthday:${m.id}:${year}`,
         title: `Aniversário · ${m.full_name}`,
-        start,
-        end,
+        start: date,
+        end: date,
         calendarId: `collab_${m.id}`,
         description: "Aniversário do colaborador",
       });
@@ -310,12 +296,11 @@ export function ScheduleCalendar({
   const [formTitle, setFormTitle] = useState("");
   const [formDesc, setFormDesc] = useState("");
   const [formClient, setFormClient] = useState<ClientRow | null>(null);
-  const [formCollaborator, setFormCollaborator] = useState<{
-    id: string;
-    full_name: string;
-  } | null>(null);
+  const [formCollaborator, setFormCollaborator] =
+    useState<CollaboratorOption | null>(null);
   const [formStart, setFormStart] = useState("");
   const [formEnd, setFormEnd] = useState("");
+  const [formAdminOnly, setFormAdminOnly] = useState(false);
   const [saving, setSaving] = useState(false);
   const [clientModalOpen, setClientModalOpen] = useState(false);
   const [holidayEvents, setHolidayEvents] = useState<CalendarEvent[]>([]);
@@ -334,14 +319,8 @@ export function ScheduleCalendar({
     if (res.data) setRows(res.data);
   }, [access, collaboratorFilterId]);
 
-  const formatDateTimePtBr = useCallback((iso: string) => {
-    return new Date(iso).toLocaleString("pt-BR", {
-      dateStyle: "short",
-      timeStyle: "short",
-    });
-  }, []);
-
   const prefillCreateDate = useCallback((date: Temporal.PlainDate) => {
+    setFormAdminOnly(false);
     const start = Temporal.ZonedDateTime.from({
       year: date.year,
       month: date.month,
@@ -371,7 +350,10 @@ export function ScheduleCalendar({
   const serverSig = useMemo(
     () =>
       initialEvents
-        .map((e) => `${e.id}:${e.starts_at}:${e.status}:${e.collaborator_id ?? ""}`)
+        .map(
+          (e) =>
+            `${e.id}:${e.starts_at}:${e.status}:${e.collaborator_id ?? ""}:${e.admin_only === true ? "1" : "0"}`,
+        )
         .join("|"),
     [initialEvents],
   );
@@ -481,6 +463,9 @@ export function ScheduleCalendar({
       timeAxisFormatOptions: { hour: "2-digit", minute: "2-digit" },
       eventOverlap: true,
     },
+    monthGridOptions: {
+      nEventsPerDay: 4,
+    },
     callbacks: {
       onEventClick: (calEvent) => {
         const sid = String(calEvent.id);
@@ -495,6 +480,7 @@ export function ScheduleCalendar({
         setCreateOpen(true);
       },
       onClickDateTime: (dateTime) => {
+        setFormAdminOnly(false);
         const end = dateTime.add({ minutes: 30 });
         const format = (zdt: Temporal.ZonedDateTime) => {
           const yyyy = String(zdt.year);
@@ -535,39 +521,12 @@ export function ScheduleCalendar({
 
   useEffect(() => {
     if (!calendarApp) return;
-    // #region agent log
-    fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "f92143",
-      },
-      body: JSON.stringify({
-        sessionId: "f92143",
-        runId: "pre-fix",
-        hypothesisId: "H3",
-        location: "components/schedule-calendar.tsx:calendarAppInit",
-        message: "Calendar initialized",
-        data: {
-          configuredViews: ["month-grid", "week", "day"],
-          selectedView:
-            (calendarApp as { calendarState?: { view?: { value?: string } } })
-              .calendarState?.view?.value ?? "unknown",
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
-  }, [calendarApp]);
-
-  useEffect(() => {
-    if (!calendarApp) return;
     calendarApp.events.set([
-      ...mapRowsToCalendarEvents(rows),
+      ...mapRowsToCalendarEvents(rows, access),
       ...holidayEvents,
       ...birthdayEvents,
     ]);
-  }, [birthdayEvents, calendarApp, holidayEvents, rows]);
+  }, [access, birthdayEvents, calendarApp, holidayEvents, rows]);
 
   async function handleCreateSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -594,25 +553,8 @@ export function ScheduleCalendar({
         collaboratorId: formCollaborator.id,
         startsAt: startIso,
         endsAt: endIso,
+        adminOnly: access === "admin" && formAdminOnly,
       });
-      // #region agent log
-      fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Debug-Session-Id": "f92143",
-        },
-        body: JSON.stringify({
-          sessionId: "f92143",
-          runId: "pre-fix",
-          hypothesisId: "H4",
-          location: "components/schedule-calendar.tsx:handleCreateSubmit",
-          message: "createEvent response",
-          data: { ok: res.ok, error: res.ok ? null : res.error },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       if (!res.ok) {
         alert(res.error);
         return;
@@ -624,6 +566,7 @@ export function ScheduleCalendar({
       setFormCollaborator(null);
       setFormStart("");
       setFormEnd("");
+      setFormAdminOnly(false);
       await refresh();
     } catch {
       alert("Não foi possível criar o evento agora.");
@@ -698,7 +641,10 @@ export function ScheduleCalendar({
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={() => setCreateOpen(true)}
+          onClick={() => {
+            setFormAdminOnly(false);
+            setCreateOpen(true);
+          }}
           className="rounded-lg bg-[#4285F4] px-4 py-2 text-sm font-medium text-white hover:opacity-95"
         >
           Novo evento
@@ -720,13 +666,10 @@ export function ScheduleCalendar({
               {EVENT_STATUS_LABELS[s]}
             </span>
           ))}
-          <span className="text-zinc-500">
-            Eventos com colaborador usam a cor definida no cadastro da equipe.
-          </span>
         </div>
       </div>
 
-      <div className="min-h-[720px] w-full rounded-xl border border-zinc-200 bg-white p-2 shadow-sm [&_.sx__calendar-wrapper]:min-h-[680px]">
+      <div className="min-h-[720px] w-full rounded-xl border border-zinc-200 bg-white p-2 shadow-sm [&_.sx__calendar-wrapper]:min-h-[680px] [&_.sx__month-grid-event]:min-w-0 [&_.sx__month-grid-event]:max-w-full [&_.sx__month-grid-event]:shrink [&_.sx__month-grid-day__events]:min-w-0">
         {calendarApp && <ScheduleXCalendar calendarApp={calendarApp} />}
       </div>
 
@@ -769,6 +712,18 @@ export function ScheduleCalendar({
                   onChange={(e) => setFormDesc(e.target.value)}
                 />
               </div>
+              {access === "admin" && (
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-zinc-800">
+                  <input
+                    type="checkbox"
+                    checked={formAdminOnly}
+                    onChange={(e) => setFormAdminOnly(e.target.checked)}
+                    disabled={saving}
+                    className="rounded border-zinc-300"
+                  />
+                  Visível apenas para administradores
+                </label>
+              )}
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="mb-1 block text-sm font-medium">
@@ -858,6 +813,12 @@ export function ScheduleCalendar({
                 <span className="font-medium text-zinc-900">Status:</span>{" "}
                 {EVENT_STATUS_LABELS[detailOpen.status]}
               </p>
+              {access === "admin" && detailOpen.admin_only === true && (
+                <p className="text-amber-800">
+                  <span className="font-medium text-zinc-900">Visibilidade:</span>{" "}
+                  apenas administradores
+                </p>
+              )}
               {detailOpen.collaborator_id && (
                 <p className="flex items-center gap-2">
                   <span className="font-medium text-zinc-900">Colaborador:</span>

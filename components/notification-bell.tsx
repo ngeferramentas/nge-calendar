@@ -8,6 +8,7 @@ import {
 } from "@/app/actions/notifications";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { NotificationRow } from "@/lib/types/database";
+import { formatDateTimePtBr } from "@/lib/format/locale";
 import { Bell } from "lucide-react";
 
 type Props = {
@@ -104,7 +105,7 @@ export function NotificationBell({ userId, initialNotifications }: Props) {
                 >
                   <p>{item.message}</p>
                   <p className="mt-1 text-xs text-zinc-500">
-                    {new Date(item.created_at).toLocaleString("pt-BR")}
+                    {formatDateTimePtBr(item.created_at)}
                   </p>
                 </button>
               ))

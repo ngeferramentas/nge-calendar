@@ -10,6 +10,7 @@ import {
   normalizeDocument,
   searchClientsSchema,
 } from "@/lib/validations/clients";
+import { normalizeCep, normalizePhoneDigits } from "@/lib/masks/br";
 
 export type ActionResult<T = void> =
   | { ok: true; data?: T }
@@ -29,6 +30,7 @@ export async function searchClients(query: string): Promise<ActionResult<ClientR
       return { ok: false, error: "Busca inválida." };
     }
 
+    // Intentionally no filter on is_active: inactive clients must remain linkable when creating events.
     const supabase = await createSupabaseServerClient();
     const raw = parsed.data.query.trim();
     const safe = raw.replace(/[%_\\]/g, "");
@@ -85,6 +87,8 @@ export async function createClient(raw: unknown): Promise<ActionResult<{ id: str
     const supabase = await createSupabaseServerClient();
     const d = parsed.data;
     const document_normalized = normalizeDocument(d.documentNumber);
+    const phone = normalizePhoneDigits(d.phone);
+    const postal_code = normalizeCep(d.postalCode);
 
     const { data, error } = await supabase
       .from("clients")
@@ -92,12 +96,13 @@ export async function createClient(raw: unknown): Promise<ActionResult<{ id: str
         document_type: d.documentType,
         document_normalized,
         full_name: d.fullName,
-        email: d.email,
-        phone: d.phone,
+        email: d.email.trim().toLowerCase(),
+        phone,
         address_line: d.addressLine,
         city: d.city,
         state: d.state,
-        postal_code: d.postalCode,
+        postal_code,
+        is_active: d.isActive,
         created_by: ctx.userId,
       })
       .select("id")
@@ -141,12 +146,13 @@ export async function updateClient(
       updates.document_normalized = normalizeDocument(d.documentNumber);
     }
     if (d.fullName !== undefined) updates.full_name = d.fullName;
-    if (d.email !== undefined) updates.email = d.email;
-    if (d.phone !== undefined) updates.phone = d.phone;
+    if (d.email !== undefined) updates.email = d.email.trim().toLowerCase();
+    if (d.phone !== undefined) updates.phone = normalizePhoneDigits(d.phone);
     if (d.addressLine !== undefined) updates.address_line = d.addressLine;
     if (d.city !== undefined) updates.city = d.city;
     if (d.state !== undefined) updates.state = d.state;
-    if (d.postalCode !== undefined) updates.postal_code = d.postalCode;
+    if (d.postalCode !== undefined) updates.postal_code = normalizeCep(d.postalCode);
+    if (d.isActive !== undefined) updates.is_active = d.isActive;
 
     const { error } = await supabase.from("clients").update(updates).eq("id", id);
 
@@ -175,10 +181,34 @@ export async function listClients(): Promise<ActionResult<ClientRow[]>> {
     const { data, error } = await supabase
       .from("clients")
       .select("*")
+      .order("is_active", { ascending: false })
       .order("full_name");
 
     if (error) throw error;
     return { ok: true, data: (data ?? []) as ClientRow[] };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
+
+export async function deleteClient(id: string): Promise<ActionResult> {
+  try {
+    const ctx = await getSessionContext();
+    requireAdmin(ctx);
+
+    const supabase = await createSupabaseServerClient();
+    const { error } = await supabase.from("clients").delete().eq("id", id);
+    if (error) throw error;
+
+    await appendAuditLog(supabase, {
+      entityType: "client",
+      entityId: id,
+      action: "delete",
+      metadata: {},
+    });
+
+    revalidatePath("/clientes");
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: err(e) };
   }

@@ -10,6 +10,7 @@ export const clientUpsertSchema = z.object({
   city: z.string().max(120).optional().default(""),
   state: z.string().max(120).optional().default(""),
   postalCode: z.string().max(20).optional().default(""),
+  isActive: z.boolean().optional().default(true),
 });
 
 export function normalizeDocument(raw: string): string {

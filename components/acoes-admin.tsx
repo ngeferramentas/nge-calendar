@@ -9,6 +9,7 @@ import {
 import { deleteMyNotification } from "@/app/actions/notifications";
 import type { EventRow, NotificationRow } from "@/lib/types/database";
 import { EVENT_STATUS_LABELS } from "@/lib/types/database";
+import { formatDateTimePtBr } from "@/lib/format/locale";
 
 type CollaboratorOption = { id: string; full_name: string; calendar_color?: string };
 
@@ -111,10 +112,10 @@ export function AcoesAdmin({
                         {event.clients?.full_name ?? event.client_id}
                       </td>
                       <td className="px-2 py-2">
-                        {new Date(event.starts_at).toLocaleString("pt-BR")}
+                        {formatDateTimePtBr(event.starts_at)}
                       </td>
                       <td className="px-2 py-2">
-                        {new Date(event.ends_at).toLocaleString("pt-BR")}
+                        {formatDateTimePtBr(event.ends_at)}
                       </td>
                       <td className="px-2 py-2">
                         {EVENT_STATUS_LABELS[event.status]}
@@ -188,7 +189,7 @@ export function AcoesAdmin({
                 <div>
                   <p className="text-sm text-zinc-900">{item.message}</p>
                   <p className="text-xs text-zinc-500">
-                    {new Date(item.created_at).toLocaleString("pt-BR")}
+                    {formatDateTimePtBr(item.created_at)}
                   </p>
                 </div>
                 <button

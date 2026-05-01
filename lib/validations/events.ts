@@ -17,6 +17,8 @@ export const createEventSchema = z
     collaboratorId: z.string().uuid(),
     startsAt: z.string().datetime({ offset: true }),
     endsAt: z.string().datetime({ offset: true }),
+    /** Admins only; ignored for collaborators server-side */
+    adminOnly: z.boolean().optional().default(false),
     /** Set by server for collaborators; admins may pass */
     status: eventStatusSchema.optional(),
   })
@@ -35,6 +37,7 @@ export const updateEventSchema = z
     startsAt: z.string().datetime({ offset: true }).optional(),
     endsAt: z.string().datetime({ offset: true }).optional(),
     status: eventStatusSchema.optional(),
+    adminOnly: z.boolean().optional(),
   })
   .refine(
     (d) => {

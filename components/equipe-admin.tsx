@@ -15,6 +15,7 @@ import {
   type ProfileRow,
   type UserRole,
 } from "@/lib/types/database";
+import { formatDatePtBr } from "@/lib/format/locale";
 import { KeyRound, Pencil, Trash2, UserPlus } from "lucide-react";
 
 const DEFAULT_HEX: string = GOOGLE_PALETTE.blue;
@@ -186,9 +187,12 @@ export function EquipeAdmin({
 
   function formatBirthDisplay(iso: string | null): string {
     if (!iso) return "—";
-    const [y, m, d] = iso.slice(0, 10).split("-");
-    if (!d || !m) return "—";
-    return `${d}/${m}`;
+    const [ys, ms, ds] = iso.slice(0, 10).split("-");
+    const y = Number(ys);
+    const m = Number(ms);
+    const d = Number(ds);
+    if (!y || !m || !d) return "—";
+    return formatDatePtBr(new Date(y, m - 1, d));
   }
 
   const ColorFields = ({
