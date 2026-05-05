@@ -86,6 +86,39 @@ export type NotificationRow = {
   created_at: string;
 };
 
+export type EventEditRequestStatus = "pending" | "approved" | "rejected";
+
+/** JSON payload for collaborator edit requests; mirrors allowed fields in validations. */
+export type EventEditRequestPayload = {
+  title?: string;
+  description?: string;
+  clientId?: string;
+  startsAt?: string;
+  endsAt?: string;
+};
+
+export type EventEditRequestRow = {
+  id: string;
+  event_id: string;
+  requested_by: string;
+  payload: EventEditRequestPayload;
+  status: EventEditRequestStatus;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+};
+
+/** Joined row from listPendingEventEditRequests (server action). */
+export type PendingEventEditRequestRow = EventEditRequestRow & {
+  event?:
+    | (EventRow & {
+        clients?: EventRow["clients"];
+        collaborator_profile?: EventRow["collaborator_profile"];
+      })
+    | null;
+  requester?: { full_name: string } | null;
+};
+
 export const EVENT_STATUS_LABELS: Record<EventStatus, string> = {
   pending_approval: "Pendente",
   approved: "Aprovado",

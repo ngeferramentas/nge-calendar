@@ -54,8 +54,38 @@ export const approveAndAssignSchema = z.object({
   collaboratorId: z.string().uuid(),
 });
 
+/** Fields collaborators may propose for approval (no status/adminOnly/collaboratorId). */
+export const requestEventEditSchema = z
+  .object({
+    eventId: z.string().uuid(),
+    title: z.string().max(500).optional(),
+    description: z.string().max(5000).optional(),
+    clientId: z.string().uuid().optional(),
+    startsAt: z.string().datetime({ offset: true }).optional(),
+    endsAt: z.string().datetime({ offset: true }).optional(),
+  })
+  .refine(
+    (d) =>
+      d.title !== undefined ||
+      d.description !== undefined ||
+      d.clientId !== undefined ||
+      d.startsAt !== undefined ||
+      d.endsAt !== undefined,
+    { message: "Informe ao menos um campo para alterar.", path: ["eventId"] },
+  )
+  .refine(
+    (d) => {
+      if (d.startsAt !== undefined && d.endsAt !== undefined) {
+        return new Date(d.endsAt) > new Date(d.startsAt);
+      }
+      return true;
+    },
+    { message: "endsAt deve ser após startsAt", path: ["endsAt"] },
+  );
+
 export type CreateEventInput = z.infer<typeof createEventSchema>;
 export type UpdateEventInput = z.infer<typeof updateEventSchema>;
+export type RequestEventEditInput = z.infer<typeof requestEventEditSchema>;
 
 export function resolveCreateStatus(
   isAdmin: boolean,

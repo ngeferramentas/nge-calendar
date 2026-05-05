@@ -21,8 +21,10 @@ import {
   deleteEvent,
   listEventsForUser,
   rejectEvent,
+  requestEventEdit,
   updateEvent,
 } from "@/app/actions/events";
+import { getClientById } from "@/app/actions/clients";
 import type {
   CollaboratorCalendarMeta,
   EventRow,
@@ -39,7 +41,7 @@ import {
 import { ClientCreateModal } from "@/components/client-create-modal";
 import type { ClientRow } from "@/lib/types/database";
 import { formatDateTimePtBr } from "@/lib/format/locale";
-import { Trash2, X } from "lucide-react";
+import { Pencil, Trash2, X } from "lucide-react";
 
 const TZ = process.env.NEXT_PUBLIC_APP_TIMEZONE ?? "America/Sao_Paulo";
 const VISIBLE_STATUS_LEGEND: EventStatus[] = [
@@ -113,6 +115,12 @@ function zdtToIso(z: Temporal.ZonedDateTime | Temporal.PlainDate): string {
   })
     .toInstant()
     .toString();
+}
+
+function isoToDatetimeLocalInput(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function mixWithWhite(hex: string, ratio: number): string {
@@ -312,6 +320,7 @@ export function ScheduleCalendar({
   const [createOpen, setCreateOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState<EventRow | null>(null);
   const [detailOpen, setDetailOpen] = useState<EventRow | null>(null);
+  const [editOpen, setEditOpen] = useState<EventRow | null>(null);
   const [assignId, setAssignId] = useState<string>("");
 
   const [formTitle, setFormTitle] = useState("");
@@ -322,6 +331,14 @@ export function ScheduleCalendar({
   const [formStart, setFormStart] = useState("");
   const [formEnd, setFormEnd] = useState("");
   const [formAdminOnly, setFormAdminOnly] = useState(false);
+  const [editFormTitle, setEditFormTitle] = useState("");
+  const [editFormDesc, setEditFormDesc] = useState("");
+  const [editFormClient, setEditFormClient] = useState<ClientRow | null>(null);
+  const [editFormCollaborator, setEditFormCollaborator] =
+    useState<CollaboratorOption | null>(null);
+  const [editFormStart, setEditFormStart] = useState("");
+  const [editFormEnd, setEditFormEnd] = useState("");
+  const [editFormAdminOnly, setEditFormAdminOnly] = useState(false);
   const [saving, setSaving] = useState(false);
   const [clientModalOpen, setClientModalOpen] = useState(false);
   const [holidayEvents, setHolidayEvents] = useState<CalendarEvent[]>([]);
@@ -691,7 +708,87 @@ export function ScheduleCalendar({
     }
     setDetailOpen(null);
     setAdminOpen(null);
+    setEditOpen(null);
     await refresh();
+  }
+
+  function beginEditFromDetail(row: EventRow) {
+    setDetailOpen(null);
+    setEditOpen(row);
+    setEditFormTitle(row.title ?? "");
+    setEditFormDesc(row.description ?? "");
+    setEditFormStart(isoToDatetimeLocalInput(row.starts_at));
+    setEditFormEnd(isoToDatetimeLocalInput(row.ends_at));
+    setEditFormAdminOnly(row.admin_only === true);
+    const collab = collaborators.find((c) => c.id === row.collaborator_id);
+    setEditFormCollaborator(
+      collab ? { id: collab.id, full_name: collab.full_name } : null,
+    );
+    setEditFormClient(null);
+    void (async () => {
+      const res = await getClientById(row.client_id);
+      if (res.ok && res.data) setEditFormClient(res.data);
+    })();
+  }
+
+  async function handleEditSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editOpen) return;
+    if (!editFormClient) {
+      alert("Selecione um cliente.");
+      return;
+    }
+    if (access === "admin" && !editFormCollaborator) {
+      alert("Selecione um colaborador.");
+      return;
+    }
+    if (!editFormStart || !editFormEnd) {
+      alert("Informe início e fim.");
+      return;
+    }
+    const startIso = new Date(editFormStart).toISOString();
+    const endIso = new Date(editFormEnd).toISOString();
+    setSaving(true);
+    try {
+      if (access === "admin") {
+        const res = await updateEvent({
+          id: editOpen.id,
+          title: editFormTitle,
+          description: editFormDesc,
+          clientId: editFormClient.id,
+          collaboratorId: editFormCollaborator!.id,
+          startsAt: startIso,
+          endsAt: endIso,
+          adminOnly: editFormAdminOnly,
+        });
+        if (!res.ok) {
+          alert(res.error);
+          return;
+        }
+      } else {
+        const res = await requestEventEdit({
+          eventId: editOpen.id,
+          title: editFormTitle,
+          description: editFormDesc,
+          clientId: editFormClient.id,
+          startsAt: startIso,
+          endsAt: endIso,
+        });
+        if (!res.ok) {
+          alert(res.error);
+          return;
+        }
+        alert(
+          "Solicitação enviada. Um gestor precisará aprovar na página Ações.",
+        );
+      }
+      setEditOpen(null);
+      await refresh();
+    } catch {
+      alert("Não foi possível salvar agora.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -862,6 +959,134 @@ export function ScheduleCalendar({
         }}
       />
 
+      {editOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 p-4">
+          <form
+            onSubmit={handleEditSubmit}
+            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-xl"
+          >
+            <h2 className="mb-4 text-lg font-semibold text-zinc-900">
+              {access === "admin"
+                ? "Editar evento"
+                : "Solicitar alteração ao evento"}
+            </h2>
+            {access === "collaborator" && (
+              <p className="mb-4 text-sm text-zinc-600">
+                As alterações só entram em vigor após aprovação de um gestor na
+                página Ações.
+              </p>
+            )}
+            <div className="space-y-3">
+              <ClientCombobox
+                value={editFormClient}
+                onChange={setEditFormClient}
+                disabled={saving}
+              />
+              {access === "admin" && (
+                <>
+                  <CollaboratorCombobox
+                    value={editFormCollaborator}
+                    onChange={setEditFormCollaborator}
+                    disabled={saving}
+                  />
+                  <label className="flex cursor-pointer items-center gap-2 text-sm text-zinc-800">
+                    <input
+                      type="checkbox"
+                      checked={editFormAdminOnly}
+                      onChange={(e) => setEditFormAdminOnly(e.target.checked)}
+                      disabled={saving}
+                      className="rounded border-zinc-300"
+                    />
+                    Visível apenas para administradores
+                  </label>
+                </>
+              )}
+              <div>
+                <label className="mb-1 block text-sm font-medium">Título</label>
+                <input
+                  className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                  value={editFormTitle}
+                  onChange={(e) => setEditFormTitle(e.target.value)}
+                  disabled={saving}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium">
+                  Descrição
+                </label>
+                <textarea
+                  className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                  rows={2}
+                  value={editFormDesc}
+                  onChange={(e) => setEditFormDesc(e.target.value)}
+                  disabled={saving}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="mb-1 block text-sm font-medium">
+                    Início
+                  </label>
+                  <input
+                    type="datetime-local"
+                    lang="pt-BR"
+                    required
+                    className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                    value={editFormStart}
+                    onChange={(e) => setEditFormStart(e.target.value)}
+                    disabled={saving}
+                  />
+                  {editFormStart && (
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {formatDateTimePtBr(
+                        new Date(editFormStart).toISOString(),
+                      )}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium">Fim</label>
+                  <input
+                    type="datetime-local"
+                    lang="pt-BR"
+                    required
+                    className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+                    value={editFormEnd}
+                    onChange={(e) => setEditFormEnd(e.target.value)}
+                    disabled={saving}
+                  />
+                  {editFormEnd && (
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {formatDateTimePtBr(new Date(editFormEnd).toISOString())}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-lg px-4 py-2 text-sm text-zinc-600 hover:bg-zinc-100"
+                onClick={() => setEditOpen(null)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="rounded-lg bg-[#0F9D58] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+              >
+                {saving
+                  ? "Salvando…"
+                  : access === "admin"
+                    ? "Salvar"
+                    : "Enviar para aprovação"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {detailOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 p-4">
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
@@ -912,6 +1137,16 @@ export function ScheduleCalendar({
               )}
             </div>
             <div className="mt-6 flex flex-wrap justify-end gap-2">
+              {(access === "admin" || access === "collaborator") && (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-800 hover:bg-zinc-50"
+                  onClick={() => beginEditFromDetail(detailOpen)}
+                >
+                  <Pencil className="h-4 w-4" aria-hidden />
+                  Editar
+                </button>
+              )}
               {access === "admin" && detailOpen.status === "pending_approval" && (
                 <button
                   type="button"

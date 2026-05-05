@@ -1,4 +1,7 @@
-import { listPendingApprovalEvents } from "@/app/actions/events";
+import {
+  listPendingApprovalEvents,
+  listPendingEventEditRequests,
+} from "@/app/actions/events";
 import { listMyNotificationsPage } from "@/app/actions/notifications";
 import { listCollaborators } from "@/app/actions/users";
 import { AcoesAdmin } from "@/components/acoes-admin";
@@ -12,17 +15,22 @@ export default async function AcoesPage() {
     redirect("/agenda");
   }
 
-  const [pendingRes, notificationsRes, collaboratorsRes] = await Promise.all([
-    listPendingApprovalEvents(),
-    listMyNotificationsPage(),
-    listCollaborators(),
-  ]);
+  const [pendingRes, editPendingRes, notificationsRes, collaboratorsRes] =
+    await Promise.all([
+      listPendingApprovalEvents(),
+      listPendingEventEditRequests(),
+      listMyNotificationsPage(),
+      listCollaborators(),
+    ]);
 
   return (
     <div>
       <h2 className="mb-6 text-xl font-semibold text-zinc-900">Ações</h2>
       <AcoesAdmin
         initialPendingEvents={pendingRes.ok ? pendingRes.data ?? [] : []}
+        initialPendingEditRequests={
+          editPendingRes.ok ? editPendingRes.data ?? [] : []
+        }
         initialNotifications={
           notificationsRes.ok ? notificationsRes.data ?? [] : []
         }

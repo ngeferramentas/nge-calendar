@@ -3,31 +3,70 @@
 import { useMemo, useState } from "react";
 import {
   approveAndAssignEvent,
+  approveEventEditRequest,
   rejectEvent,
+  rejectEventEditRequest,
   type ActionResult as EventActionResult,
 } from "@/app/actions/events";
 import { deleteMyNotification } from "@/app/actions/notifications";
-import type { EventRow, NotificationRow } from "@/lib/types/database";
+import type {
+  EventEditRequestPayload,
+  EventRow,
+  NotificationRow,
+  PendingEventEditRequestRow,
+} from "@/lib/types/database";
 import { EVENT_STATUS_LABELS } from "@/lib/types/database";
 import { formatDateTimePtBr } from "@/lib/format/locale";
 
 type CollaboratorOption = { id: string; full_name: string; calendar_color?: string };
 
+function summarizeEditPayload(
+  payload: EventEditRequestPayload,
+  event: EventRow,
+): string {
+  const parts: string[] = [];
+  if (payload.title !== undefined && payload.title !== event.title) {
+    parts.push("título");
+  }
+  if (payload.description !== undefined && payload.description !== event.description) {
+    parts.push("descrição");
+  }
+  if (payload.clientId !== undefined && payload.clientId !== event.client_id) {
+    parts.push("cliente");
+  }
+  if (payload.startsAt !== undefined && payload.startsAt !== event.starts_at) {
+    parts.push("início");
+  }
+  if (payload.endsAt !== undefined && payload.endsAt !== event.ends_at) {
+    parts.push("fim");
+  }
+  if (parts.length === 0) {
+    return "Campos enviados (sem mudança detectada)";
+  }
+  return parts.join(", ");
+}
+
 type Props = {
   initialPendingEvents: EventRow[];
+  initialPendingEditRequests: PendingEventEditRequestRow[];
   initialNotifications: NotificationRow[];
   collaborators: CollaboratorOption[];
 };
 
 export function AcoesAdmin({
   initialPendingEvents,
+  initialPendingEditRequests,
   initialNotifications,
   collaborators,
 }: Props) {
   const [pendingEvents, setPendingEvents] = useState(initialPendingEvents);
+  const [pendingEditRequests, setPendingEditRequests] = useState(
+    initialPendingEditRequests,
+  );
   const [notifications, setNotifications] = useState(initialNotifications);
   const [assignByEventId, setAssignByEventId] = useState<Record<string, string>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [savingEditId, setSavingEditId] = useState<string | null>(null);
 
   const defaultCollaboratorId = collaborators[0]?.id ?? "";
 
@@ -38,6 +77,17 @@ export function AcoesAdmin({
           new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime(),
       ),
     [pendingEvents],
+  );
+
+  const pendingEditSorted = useMemo(
+    () =>
+      [...pendingEditRequests]
+        .filter((r) => r.event)
+        .sort(
+          (a, b) =>
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+        ),
+    [pendingEditRequests],
   );
 
   async function runAction(eventId: string, job: () => Promise<EventActionResult>) {
@@ -77,6 +127,22 @@ export function AcoesAdmin({
       return;
     }
     setNotifications((prev) => prev.filter((item) => item.id !== id));
+  }
+
+  async function runEditAction(
+    requestId: string,
+    job: () => Promise<EventActionResult>,
+  ) {
+    setSavingEditId(requestId);
+    const res = await job();
+    setSavingEditId(null);
+    if (!res.ok) {
+      alert(res.error);
+      return;
+    }
+    setPendingEditRequests((prev) =>
+      prev.filter((row) => row.id !== requestId),
+    );
   }
 
   return (
@@ -158,6 +224,85 @@ export function AcoesAdmin({
                             type="button"
                             onClick={() => void handleApprove(event)}
                             disabled={savingId === event.id || !currentAssign}
+                            className="rounded-lg bg-[#4285F4] px-3 py-1.5 text-white disabled:opacity-50"
+                          >
+                            Aprovar
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+        <h3 className="mb-3 text-base font-semibold text-zinc-900">
+          Alterações de eventos pendentes
+        </h3>
+        {pendingEditSorted.length === 0 ? (
+          <p className="text-sm text-zinc-500">
+            Nenhuma alteração aguardando aprovação.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[840px] text-left text-sm">
+              <thead className="text-zinc-500">
+                <tr>
+                  <th className="px-2 py-2 font-medium">Cliente</th>
+                  <th className="px-2 py-2 font-medium">Evento</th>
+                  <th className="px-2 py-2 font-medium">Solicitante</th>
+                  <th className="px-2 py-2 font-medium">Alterações</th>
+                  <th className="px-2 py-2 font-medium">Pedido em</th>
+                  <th className="px-2 py-2 font-medium text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendingEditSorted.map((req) => {
+                  const ev = req.event!;
+                  const payload = req.payload ?? {};
+                  return (
+                    <tr key={req.id} className="border-t border-zinc-100">
+                      <td className="px-2 py-2">
+                        {ev.clients?.full_name ?? ev.client_id}
+                      </td>
+                      <td className="max-w-[200px] truncate px-2 py-2" title={ev.title}>
+                        {ev.title?.trim() || "—"}
+                      </td>
+                      <td className="px-2 py-2">
+                        {req.requester?.full_name?.trim() || req.requested_by}
+                      </td>
+                      <td className="max-w-[280px] px-2 py-2 text-zinc-700">
+                        {summarizeEditPayload(payload, ev)}
+                      </td>
+                      <td className="px-2 py-2 text-zinc-600">
+                        {formatDateTimePtBr(req.created_at)}
+                      </td>
+                      <td className="px-2 py-2">
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void runEditAction(req.id, () =>
+                                rejectEventEditRequest(req.id),
+                              )
+                            }
+                            disabled={savingEditId === req.id}
+                            className="rounded-lg bg-[#DB4437] px-3 py-1.5 text-white disabled:opacity-50"
+                          >
+                            Recusar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void runEditAction(req.id, () =>
+                                approveEventEditRequest(req.id),
+                              )
+                            }
+                            disabled={savingEditId === req.id}
                             className="rounded-lg bg-[#4285F4] px-3 py-1.5 text-white disabled:opacity-50"
                           >
                             Aprovar

@@ -6,15 +6,23 @@ import {
   requireAdmin,
   getSessionContext,
   requireUserManager,
+  type SessionContext,
 } from "@/lib/auth/session";
 import { assertNoTimeOverlap } from "@/lib/events/overlap";
 import { scheduleEventReminder } from "@/lib/reminders/qstash";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import type { EventRow, EventStatus } from "@/lib/types/database";
+import type {
+  EventEditRequestPayload,
+  EventRow,
+  EventStatus,
+  PendingEventEditRequestRow,
+} from "@/lib/types/database";
 import {
   approveAndAssignSchema,
   createEventSchema,
+  requestEventEditSchema,
   updateEventSchema,
+  type UpdateEventInput,
 } from "@/lib/validations/events";
 
 export type ActionResult<T = void> =
@@ -89,6 +97,133 @@ async function notifyManagersForPendingApproval(params: {
 
   if (rows.length === 0) return;
   await params.supabase.from("notifications").insert(rows);
+}
+
+async function notifyManagersForPendingEventEdit(params: {
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
+  createdBy: string;
+  eventId: string;
+  title: string;
+}): Promise<void> {
+  const { data: managers, error } = await params.supabase
+    .from("profiles")
+    .select("id")
+    .eq("role", "admin")
+    .eq("can_manage_users", true);
+  if (error || !managers?.length) return;
+
+  const message = params.title
+    ? `Alteração pendente no agendamento: ${params.title}`
+    : "Alteração pendente em um agendamento.";
+
+  const rows = managers
+    .map((m) => m.id)
+    .filter((id) => id !== params.createdBy)
+    .map((recipientId) => ({
+      recipient_id: recipientId,
+      created_by: params.createdBy,
+      event_id: params.eventId,
+      message,
+    }));
+
+  if (rows.length === 0) return;
+  await params.supabase.from("notifications").insert(rows);
+}
+
+function collaboratorMayRequestEdit(ctx: SessionContext, row: EventRow): boolean {
+  if (ctx.profile.role !== "collaborator") return false;
+  return (
+    row.collaborator_id === ctx.userId ||
+    (row.created_by === ctx.userId && row.status === "pending_approval")
+  );
+}
+
+type EventUpdatePatch = Omit<UpdateEventInput, "id">;
+
+async function applyEventUpdateFromPatch(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  adminCtx: SessionContext,
+  id: string,
+  row: EventRow,
+  patch: EventUpdatePatch,
+): Promise<void> {
+  const startsAt = patch.startsAt ?? row.starts_at;
+  const endsAt = patch.endsAt ?? row.ends_at;
+  const collaboratorId =
+    patch.collaboratorId !== undefined
+      ? patch.collaboratorId
+      : row.collaborator_id;
+
+  await assertNoTimeOverlap({
+    startsAt,
+    endsAt,
+    collaboratorId,
+    excludeEventId: id,
+  });
+
+  const nextStatus = patch.status ?? row.status;
+  const updates: Record<string, unknown> = {};
+
+  if (patch.title !== undefined) updates.title = patch.title;
+  if (patch.description !== undefined) updates.description = patch.description;
+  if (patch.clientId !== undefined) updates.client_id = patch.clientId;
+  if (patch.adminOnly !== undefined) updates.admin_only = patch.adminOnly;
+  if (patch.collaboratorId !== undefined) {
+    updates.collaborator_id = patch.collaboratorId;
+    if (patch.collaboratorId && !row.assigned_at) {
+      updates.assigned_at = new Date().toISOString();
+    }
+  }
+  if (patch.startsAt !== undefined) updates.starts_at = patch.startsAt;
+  if (patch.endsAt !== undefined) updates.ends_at = patch.endsAt;
+  if (patch.status !== undefined) updates.status = patch.status;
+
+  const shouldSetApproved =
+    (nextStatus === "approved" || nextStatus === "assigned") && !row.approved_at;
+  if (shouldSetApproved) {
+    updates.approved_by = adminCtx.userId;
+    updates.approved_at = new Date().toISOString();
+  }
+
+  const { error } = await supabase.from("events").update(updates).eq("id", id);
+
+  if (error) throw error;
+
+  await appendAuditLog(supabase, {
+    entityType: "event",
+    entityId: id,
+    action: "update",
+    metadata: { before: row, patch },
+  });
+
+  if (
+    patch.startsAt !== undefined ||
+    (row.collaborator_id === null && collaboratorId)
+  ) {
+    if (collaboratorId && nextStatus === "assigned") {
+      try {
+        await scheduleEventReminder({ eventId: id, startsAtIso: startsAt });
+      } catch {
+        // Reminders should never block event updates.
+      }
+    }
+  }
+  const nextAdminOnly =
+    patch.adminOnly !== undefined ? patch.adminOnly : row.admin_only === true;
+  if (
+    patch.collaboratorId !== undefined &&
+    patch.collaboratorId &&
+    patch.collaboratorId !== row.collaborator_id &&
+    !nextAdminOnly
+  ) {
+    await notifyCollaboratorAssignment({
+      supabase,
+      recipientId: patch.collaboratorId,
+      createdBy: adminCtx.userId,
+      eventId: id,
+      title: patch.title ?? row.title,
+    });
+  }
 }
 
 export async function createEvent(
@@ -219,83 +354,7 @@ export async function updateEvent(raw: unknown): Promise<ActionResult> {
     }
 
     const row = existing as EventRow;
-    const startsAt = patch.startsAt ?? row.starts_at;
-    const endsAt = patch.endsAt ?? row.ends_at;
-    const collaboratorId =
-      patch.collaboratorId !== undefined
-        ? patch.collaboratorId
-        : row.collaborator_id;
-
-    await assertNoTimeOverlap({
-      startsAt,
-      endsAt,
-      collaboratorId,
-      excludeEventId: id,
-    });
-
-    const nextStatus = patch.status ?? row.status;
-    const updates: Record<string, unknown> = {};
-
-    if (patch.title !== undefined) updates.title = patch.title;
-    if (patch.description !== undefined) updates.description = patch.description;
-    if (patch.clientId !== undefined) updates.client_id = patch.clientId;
-    if (patch.adminOnly !== undefined) updates.admin_only = patch.adminOnly;
-    if (patch.collaboratorId !== undefined) {
-      updates.collaborator_id = patch.collaboratorId;
-      if (patch.collaboratorId && !row.assigned_at) {
-        updates.assigned_at = new Date().toISOString();
-      }
-    }
-    if (patch.startsAt !== undefined) updates.starts_at = patch.startsAt;
-    if (patch.endsAt !== undefined) updates.ends_at = patch.endsAt;
-    if (patch.status !== undefined) updates.status = patch.status;
-
-    const shouldSetApproved =
-      (nextStatus === "approved" || nextStatus === "assigned") && !row.approved_at;
-    if (shouldSetApproved) {
-      updates.approved_by = adminCtx.userId;
-      updates.approved_at = new Date().toISOString();
-    }
-
-    const { error } = await supabase.from("events").update(updates).eq("id", id);
-
-    if (error) throw error;
-
-    await appendAuditLog(supabase, {
-      entityType: "event",
-      entityId: id,
-      action: "update",
-      metadata: { before: row, patch },
-    });
-
-    if (
-      patch.startsAt !== undefined ||
-      (row.collaborator_id === null && collaboratorId)
-    ) {
-      if (collaboratorId && nextStatus === "assigned") {
-        try {
-          await scheduleEventReminder({ eventId: id, startsAtIso: startsAt });
-        } catch {
-          // Reminders should never block event updates.
-        }
-      }
-    }
-    const nextAdminOnly =
-      patch.adminOnly !== undefined ? patch.adminOnly : row.admin_only === true;
-    if (
-      patch.collaboratorId !== undefined &&
-      patch.collaboratorId &&
-      patch.collaboratorId !== row.collaborator_id &&
-      !nextAdminOnly
-    ) {
-      await notifyCollaboratorAssignment({
-        supabase,
-        recipientId: patch.collaboratorId,
-        createdBy: adminCtx.userId,
-        eventId: id,
-        title: patch.title ?? row.title,
-      });
-    }
+    await applyEventUpdateFromPatch(supabase, adminCtx, id, row, patch);
 
     revalidatePath("/agenda");
     revalidatePath("/acoes");
@@ -431,6 +490,272 @@ export async function deleteEvent(eventId: string): Promise<ActionResult> {
       entityType: "event",
       entityId: eventId,
       action: "delete",
+      metadata: {},
+    });
+
+    revalidatePath("/agenda");
+    revalidatePath("/acoes");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
+
+export async function requestEventEdit(raw: unknown): Promise<ActionResult> {
+  try {
+    const ctx = await getSessionContext();
+    if (!ctx) return { ok: false, error: "Não autenticado." };
+
+    const parsed = requestEventEditSchema.safeParse(raw);
+    if (!parsed.success) {
+      return { ok: false, error: parseValidationError(parsed.error) };
+    }
+
+    if (ctx.profile.role === "admin") {
+      return {
+        ok: false,
+        error: "Administradores editam o evento diretamente na agenda.",
+      };
+    }
+
+    const { eventId, ...fields } = parsed.data;
+    const supabase = await createSupabaseServerClient();
+
+    const { data: existing, error: fetchErr } = await supabase
+      .from("events")
+      .select("*")
+      .eq("id", eventId)
+      .single();
+
+    if (fetchErr || !existing) {
+      return { ok: false, error: "Evento não encontrado." };
+    }
+
+    const row = existing as EventRow;
+
+    if (!collaboratorMayRequestEdit(ctx, row)) {
+      return {
+        ok: false,
+        error: "Sem permissão para solicitar alteração neste evento.",
+      };
+    }
+
+    const startsAt = fields.startsAt ?? row.starts_at;
+    const endsAt = fields.endsAt ?? row.ends_at;
+    if (new Date(endsAt) <= new Date(startsAt)) {
+      return { ok: false, error: "O horário de fim deve ser após o início." };
+    }
+
+    await assertNoTimeOverlap({
+      startsAt,
+      endsAt,
+      collaboratorId: row.collaborator_id,
+      excludeEventId: eventId,
+    });
+
+    const payload: EventEditRequestPayload = {};
+    if (fields.title !== undefined) payload.title = fields.title;
+    if (fields.description !== undefined) payload.description = fields.description;
+    if (fields.clientId !== undefined) payload.clientId = fields.clientId;
+    if (fields.startsAt !== undefined) payload.startsAt = fields.startsAt;
+    if (fields.endsAt !== undefined) payload.endsAt = fields.endsAt;
+
+    const { data: pendingOther, error: pendErr } = await supabase
+      .from("event_edit_requests")
+      .select("id, requested_by")
+      .eq("event_id", eventId)
+      .eq("status", "pending")
+      .maybeSingle();
+
+    if (pendErr) throw pendErr;
+
+    if (pendingOther && pendingOther.requested_by !== ctx.userId) {
+      return {
+        ok: false,
+        error: "Já existe uma alteração pendente para este evento.",
+      };
+    }
+
+    if (pendingOther && pendingOther.requested_by === ctx.userId) {
+      const { error: delErr } = await supabase
+        .from("event_edit_requests")
+        .delete()
+        .eq("id", pendingOther.id);
+      if (delErr) throw delErr;
+    }
+
+    const { error: insErr } = await supabase.from("event_edit_requests").insert({
+      event_id: eventId,
+      requested_by: ctx.userId,
+      payload,
+      status: "pending",
+    });
+
+    if (insErr) throw insErr;
+
+    await notifyManagersForPendingEventEdit({
+      supabase,
+      createdBy: ctx.userId,
+      eventId,
+      title: row.title,
+    });
+
+    revalidatePath("/agenda");
+    revalidatePath("/acoes");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
+
+export async function listPendingEventEditRequests(): Promise<
+  ActionResult<PendingEventEditRequestRow[]>
+> {
+  try {
+    const ctx = await getSessionContext();
+    if (!ctx) return { ok: false, error: "Não autenticado." };
+    requireUserManager(ctx);
+
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase
+      .from("event_edit_requests")
+      .select(
+        `
+        *,
+        event:events!event_id (
+          *,
+          clients (full_name, document_normalized),
+          collaborator_profile:profiles!events_collaborator_id_fkey (calendar_color, full_name)
+        ),
+        requester:profiles!event_edit_requests_requested_by_fkey (full_name)
+      `,
+      )
+      .eq("status", "pending")
+      .order("created_at");
+
+    if (error) throw error;
+
+    return {
+      ok: true,
+      data: (data ?? []) as PendingEventEditRequestRow[],
+    };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
+
+export async function approveEventEditRequest(
+  requestId: string,
+): Promise<ActionResult> {
+  try {
+    const ctx = await getSessionContext();
+    const mgrCtx = requireUserManager(ctx);
+
+    const supabase = await createSupabaseServerClient();
+
+    const { data: req, error: reqErr } = await supabase
+      .from("event_edit_requests")
+      .select("*")
+      .eq("id", requestId)
+      .single();
+
+    if (reqErr || !req) {
+      return { ok: false, error: "Solicitação não encontrada." };
+    }
+
+    if (req.status !== "pending") {
+      return { ok: false, error: "Esta solicitação já foi processada." };
+    }
+
+    const { data: existing, error: evErr } = await supabase
+      .from("events")
+      .select("*")
+      .eq("id", req.event_id)
+      .single();
+
+    if (evErr || !existing) {
+      return { ok: false, error: "Evento não encontrado." };
+    }
+
+    const row = existing as EventRow;
+    const payload = req.payload as EventEditRequestPayload;
+    const patch: EventUpdatePatch = {
+      title: payload.title,
+      description: payload.description,
+      clientId: payload.clientId,
+      startsAt: payload.startsAt,
+      endsAt: payload.endsAt,
+    };
+
+    await applyEventUpdateFromPatch(supabase, mgrCtx, req.event_id, row, patch);
+
+    const now = new Date().toISOString();
+    const { error: updReqErr } = await supabase
+      .from("event_edit_requests")
+      .update({
+        status: "approved",
+        reviewed_by: mgrCtx.userId,
+        reviewed_at: now,
+      })
+      .eq("id", requestId);
+
+    if (updReqErr) throw updReqErr;
+
+    await appendAuditLog(supabase, {
+      entityType: "event_edit_request",
+      entityId: requestId,
+      action: "approve",
+      metadata: { eventId: req.event_id },
+    });
+
+    revalidatePath("/agenda");
+    revalidatePath("/acoes");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
+
+export async function rejectEventEditRequest(
+  requestId: string,
+): Promise<ActionResult> {
+  try {
+    const ctx = await getSessionContext();
+    const mgrCtx = requireUserManager(ctx);
+
+    const supabase = await createSupabaseServerClient();
+
+    const { data: req, error: reqErr } = await supabase
+      .from("event_edit_requests")
+      .select("id, status")
+      .eq("id", requestId)
+      .single();
+
+    if (reqErr || !req) {
+      return { ok: false, error: "Solicitação não encontrada." };
+    }
+
+    if (req.status !== "pending") {
+      return { ok: false, error: "Esta solicitação já foi processada." };
+    }
+
+    const now = new Date().toISOString();
+    const { error } = await supabase
+      .from("event_edit_requests")
+      .update({
+        status: "rejected",
+        reviewed_by: mgrCtx.userId,
+        reviewed_at: now,
+      })
+      .eq("id", requestId)
+      .eq("status", "pending");
+
+    if (error) throw error;
+
+    await appendAuditLog(supabase, {
+      entityType: "event_edit_request",
+      entityId: requestId,
+      action: "reject",
       metadata: {},
     });
 

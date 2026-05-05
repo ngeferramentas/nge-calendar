@@ -74,6 +74,29 @@ export async function searchClients(query: string): Promise<ActionResult<ClientR
   }
 }
 
+export async function getClientById(
+  clientId: string,
+): Promise<ActionResult<ClientRow>> {
+  try {
+    const ctx = await getSessionContext();
+    if (!ctx) return { ok: false, error: "Não autenticado." };
+
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase
+      .from("clients")
+      .select("*")
+      .eq("id", clientId)
+      .single();
+
+    if (error || !data) {
+      return { ok: false, error: "Cliente não encontrado." };
+    }
+    return { ok: true, data: data as ClientRow };
+  } catch (e) {
+    return { ok: false, error: err(e) };
+  }
+}
+
 export async function createClient(raw: unknown): Promise<ActionResult<{ id: string }>> {
   try {
     const ctx = await getSessionContext();
