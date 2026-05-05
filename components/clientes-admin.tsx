@@ -48,7 +48,7 @@ export function ClientesAdmin({ initialClients }: { initialClients: ClientRow[] 
               <th className="px-4 py-3">Documento</th>
               <th className="px-4 py-3">E-mail</th>
               <th className="px-4 py-3">Telefone</th>
-              <th className="px-4 py-3">Cidade</th>
+              <th className="px-4 py-3">Endereço</th>
               <th className="px-4 py-3 w-28">Ações</th>
             </tr>
           </thead>

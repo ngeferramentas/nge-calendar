@@ -122,6 +122,7 @@ export async function createClient(raw: unknown): Promise<ActionResult<{ id: str
         email: d.email.trim().toLowerCase(),
         phone,
         address_line: d.addressLine,
+        bairro: d.bairro,
         city: d.city,
         state: d.state,
         postal_code,
@@ -172,6 +173,7 @@ export async function updateClient(
     if (d.email !== undefined) updates.email = d.email.trim().toLowerCase();
     if (d.phone !== undefined) updates.phone = normalizePhoneDigits(d.phone);
     if (d.addressLine !== undefined) updates.address_line = d.addressLine;
+    if (d.bairro !== undefined) updates.bairro = d.bairro;
     if (d.city !== undefined) updates.city = d.city;
     if (d.state !== undefined) updates.state = d.state;
     if (d.postalCode !== undefined) updates.postal_code = normalizeCep(d.postalCode);

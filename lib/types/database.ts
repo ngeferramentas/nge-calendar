@@ -36,6 +36,7 @@ export type ClientRow = {
   email: string;
   phone: string;
   address_line: string;
+  bairro: string;
   city: string;
   state: string;
   postal_code: string;
@@ -62,7 +63,12 @@ export type EventRow = {
   approved_at: string | null;
   assigned_at: string | null;
   reminder_sent_at: string | null;
-  clients?: { full_name: string; document_normalized: string } | null;
+  clients?: {
+    full_name: string;
+    document_normalized: string;
+    address_line: string;
+    bairro: string;
+  } | null;
   collaborator_profile?: { calendar_color: string; full_name?: string } | null;
 };
 

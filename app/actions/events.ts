@@ -624,7 +624,7 @@ export async function listPendingEventEditRequests(): Promise<
         *,
         event:events!event_id (
           *,
-          clients (full_name, document_normalized),
+          clients (full_name, document_normalized, address_line, bairro),
           collaborator_profile:profiles!events_collaborator_id_fkey (calendar_color, full_name)
         ),
         requester:profiles!event_edit_requests_requested_by_fkey (full_name)
@@ -777,7 +777,7 @@ export async function listEventsForUser(params?: {
     const supabase = await createSupabaseServerClient();
 
     const eventSelect =
-      "*, clients(full_name, document_normalized), collaborator_profile:profiles!events_collaborator_id_fkey(calendar_color, full_name)";
+      "*, clients(full_name, document_normalized, address_line, bairro), collaborator_profile:profiles!events_collaborator_id_fkey(calendar_color, full_name)";
 
     if (ctx.profile.role === "collaborator") {
       const { data, error } = await supabase
@@ -809,7 +809,7 @@ export async function listPendingApprovalEvents(): Promise<ActionResult<EventRow
 
     const supabase = await createSupabaseServerClient();
     const eventSelect =
-      "*, clients(full_name, document_normalized), collaborator_profile:profiles!events_collaborator_id_fkey(calendar_color, full_name), creator_profile:profiles!events_created_by_fkey(role, full_name)";
+      "*, clients(full_name, document_normalized, address_line, bairro), collaborator_profile:profiles!events_collaborator_id_fkey(calendar_color, full_name), creator_profile:profiles!events_created_by_fkey(role, full_name)";
 
     const { data, error } = await supabase
       .from("events")

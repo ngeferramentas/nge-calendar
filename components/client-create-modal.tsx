@@ -11,6 +11,26 @@ import {
 } from "@/lib/masks/br";
 import type { ClientRow } from "@/lib/types/database";
 
+/** BrasilAPI CEP payload (v1/v2 share these fields we use). */
+type BrasilApiCepResp = {
+  street?: string;
+  neighborhood?: string;
+  city?: string;
+  state?: string;
+};
+
+async function fetchBrasilApiCep(
+  version: "v1" | "v2",
+  cep: string,
+  signal: AbortSignal,
+): Promise<BrasilApiCepResp | null> {
+  const resp = await fetch(`https://brasilapi.com.br/api/cep/${version}/${cep}`, {
+    signal,
+  });
+  if (!resp.ok) return null;
+  return (await resp.json()) as BrasilApiCepResp;
+}
+
 type ClientForm = {
   documentType: "cpf" | "cnpj";
   documentNumber: string;
@@ -18,6 +38,7 @@ type ClientForm = {
   email: string;
   phone: string;
   addressLine: string;
+  bairro: string;
   city: string;
   state: string;
   postalCode: string;
@@ -31,6 +52,7 @@ const INITIAL_FORM: ClientForm = {
   email: "",
   phone: "",
   addressLine: "",
+  bairro: "",
   city: "",
   state: "",
   postalCode: "",
@@ -45,6 +67,7 @@ function rowToForm(c: ClientRow): ClientForm {
     email: c.email,
     phone: maskPhoneBr(c.phone),
     addressLine: c.address_line,
+    bairro: c.bairro ?? "",
     city: c.city,
     state: c.state,
     postalCode: maskCep(c.postal_code),
@@ -98,22 +121,36 @@ export function ClientCreateModal({
       setCepBusy(true);
       setCepMessage(null);
       try {
-        const resp = await fetch(`https://brasilapi.com.br/api/cep/v2/${cep}`, {
-          signal: controller.signal,
-        });
-        if (!resp.ok) throw new Error("CEP não encontrado");
-        const data = (await resp.json()) as {
-          street?: string;
-          city?: string;
-          state?: string;
-        };
+        const v2 = await fetchBrasilApiCep("v2", cep, controller.signal);
+        if (!v2) throw new Error("CEP não encontrado");
+
+        let merged: BrasilApiCepResp = v2;
+        if (!v2.neighborhood?.trim()) {
+          const v1 = await fetchBrasilApiCep("v1", cep, controller.signal);
+          if (v1) {
+            merged = {
+              street: v2.street?.trim() || v1.street,
+              neighborhood: v2.neighborhood?.trim() || v1.neighborhood,
+              city: v2.city?.trim() || v1.city,
+              state: v2.state?.trim() || v1.state,
+            };
+          }
+        }
+
         setForm((f) => ({
           ...f,
-          addressLine: data.street?.trim() || f.addressLine,
-          city: data.city?.trim() || f.city,
-          state: data.state?.trim() || f.state,
+          addressLine: merged.street?.trim() || f.addressLine,
+          bairro: merged.neighborhood?.trim() || f.bairro,
+          city: merged.city?.trim() || f.city,
+          state: merged.state?.trim() || f.state,
         }));
-        setCepMessage("Endereço preenchido automaticamente.");
+
+        const hasBairro = Boolean(merged.neighborhood?.trim());
+        setCepMessage(
+          hasBairro
+            ? "Endereço preenchido automaticamente."
+            : "Endereço preenchido; informe o bairro manualmente se necessário.",
+        );
       } catch {
         setCepMessage("Não foi possível consultar este CEP. Preencha manualmente.");
       } finally {
@@ -157,6 +194,7 @@ export function ClientCreateModal({
       email: normalizeEmailInput(form.email),
       phone: normalizePhoneDigits(form.phone),
       address_line: form.addressLine,
+      bairro: form.bairro,
       city: form.city,
       state: form.state,
       postal_code: normalizeCep(form.postalCode),
@@ -266,19 +304,25 @@ export function ClientCreateModal({
                 setForm((f) => ({ ...f, postalCode: maskCep(e.target.value) }));
               }}
             />
-            <p className="mt-1 text-xs text-zinc-500">
-              {cepBusy
-                ? "Consultando CEP..."
-                : (cepMessage ?? "Informe o CEP para preencher endereço automaticamente.")}
-            </p>
+
           </div>
           <div className="col-span-2">
-            <label className="mb-1 block text-xs font-medium">Endereço</label>
+            <label className="mb-1 block text-xs font-medium">Logradouro</label>
             <input
               className="w-full rounded border border-zinc-200 px-2 py-2 text-sm"
               value={form.addressLine}
               onChange={(e) =>
                 setForm((f) => ({ ...f, addressLine: e.target.value }))
+              }
+            />
+          </div>
+          <div className="col-span-2">
+            <label className="mb-1 block text-xs font-medium">Bairro</label>
+            <input
+              className="w-full rounded border border-zinc-200 px-2 py-2 text-sm"
+              value={form.bairro}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, bairro: e.target.value }))
               }
             />
           </div>

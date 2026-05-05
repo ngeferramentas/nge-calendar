@@ -1099,6 +1099,14 @@ export function ScheduleCalendar({
                 {detailOpen.clients?.full_name ?? detailOpen.client_id}
               </p>
               <p>
+                <span className="font-medium text-zinc-900">Logradouro:</span>{" "}
+                {detailOpen.clients?.address_line?.trim() || "—"}
+              </p>
+              <p>
+                <span className="font-medium text-zinc-900">Bairro:</span>{" "}
+                {detailOpen.clients?.bairro?.trim() || "—"}
+              </p>
+              <p>
                 <span className="font-medium text-zinc-900">Início:</span>{" "}
                 {formatDateTimePtBr(detailOpen.starts_at)}
               </p>

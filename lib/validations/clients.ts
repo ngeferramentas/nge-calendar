@@ -7,6 +7,7 @@ export const clientUpsertSchema = z.object({
   email: z.string().email().or(z.literal("")),
   phone: z.string().max(40).optional().default(""),
   addressLine: z.string().max(500).optional().default(""),
+  bairro: z.string().max(200).optional().default(""),
   city: z.string().max(120).optional().default(""),
   state: z.string().max(120).optional().default(""),
   postalCode: z.string().max(20).optional().default(""),
