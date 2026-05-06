@@ -39,6 +39,7 @@ import {
   type CollaboratorOption,
 } from "@/components/collaborator-combobox";
 import { ClientCreateModal } from "@/components/client-create-modal";
+import { useCollaboratorVisibility } from "@/components/collaborator-visibility-context";
 import type { ClientRow } from "@/lib/types/database";
 import { formatDateTimePtBr } from "@/lib/format/locale";
 import { Pencil, Trash2, X } from "lucide-react";
@@ -301,9 +302,6 @@ type Props = {
   initialEvents: EventRow[];
   collaborators: { id: string; full_name: string; calendar_color?: string }[];
   collaboratorMeta: CollaboratorCalendarMeta[];
-  collaboratorFilterId?: string | null;
-  /** When admin’s calendar filter excludes the newly assigned collaborator, parent clears the filter. */
-  onEventCreated?: (assignedCollaboratorId: string) => void;
 };
 
 export function ScheduleCalendar({
@@ -312,9 +310,8 @@ export function ScheduleCalendar({
   initialEvents,
   collaborators,
   collaboratorMeta,
-  collaboratorFilterId = null,
-  onEventCreated,
 }: Props) {
+  const collaboratorVisibility = useCollaboratorVisibility();
   const [rows, setRows] = useState<EventRow[]>(initialEvents);
   const [banner, setBanner] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -343,30 +340,16 @@ export function ScheduleCalendar({
   const [clientModalOpen, setClientModalOpen] = useState(false);
   const [holidayEvents, setHolidayEvents] = useState<CalendarEvent[]>([]);
   const rowsRef = useRef(rows);
-  const skipFilterRefresh = useRef(true);
 
-  const refresh = useCallback(
-    async (opts?: {
-      collaboratorFilterId?: string | null;
-    }): Promise<boolean> => {
-      const listFilter =
-        access === "admin"
-          ? opts?.collaboratorFilterId !== undefined
-            ? opts.collaboratorFilterId ?? undefined
-            : collaboratorFilterId ?? undefined
-          : undefined;
-      const res = await listEventsForUser({
-        collaboratorFilterId: listFilter,
-      });
-      if (!res.ok) {
-        setBanner(res.error);
-        return false;
-      }
-      if (res.data) setRows(res.data);
-      return true;
-    },
-    [access, collaboratorFilterId],
-  );
+  const refresh = useCallback(async (): Promise<boolean> => {
+    const res = await listEventsForUser({});
+    if (!res.ok) {
+      setBanner(res.error);
+      return false;
+    }
+    if (res.data) setRows(res.data);
+    return true;
+  }, []);
 
   const prefillCreateDate = useCallback((date: Temporal.PlainDate) => {
     setFormAdminOnly(false);
@@ -411,14 +394,6 @@ export function ScheduleCalendar({
     setLastServerSig(serverSig);
     setRows(initialEvents);
   }
-
-  useEffect(() => {
-    if (skipFilterRefresh.current) {
-      skipFilterRefresh.current = false;
-      return;
-    }
-    void refresh();
-  }, [collaboratorFilterId, refresh]);
 
   useEffect(() => {
     const supabase = createSupabaseBrowserClient();
@@ -478,11 +453,23 @@ export function ScheduleCalendar({
     };
   }, []);
 
+  const collaboratorMetaForBirthdays = useMemo(() => {
+    if (access !== "admin" || !collaboratorVisibility) return collaboratorMeta;
+    return collaboratorMeta.filter((m) => collaboratorVisibility.isVisible(m.id));
+  }, [access, collaboratorMeta, collaboratorVisibility]);
+
   const birthdayEvents = useMemo(() => {
     const nowYear = Temporal.Now.plainDateISO().year;
     const years = [nowYear, nowYear + 1];
-    return birthdayEntriesToCalendarEvents(collaboratorMeta, years);
-  }, [collaboratorMeta]);
+    return birthdayEntriesToCalendarEvents(collaboratorMetaForBirthdays, years);
+  }, [collaboratorMetaForBirthdays]);
+
+  const visibleRows = useMemo(() => {
+    if (access !== "admin" || !collaboratorVisibility) return rows;
+    return rows.filter((r) =>
+      collaboratorVisibility.isEventRowVisible(r.collaborator_id),
+    );
+  }, [access, collaboratorVisibility, rows]);
 
   const metaColorByCollaboratorId = useMemo(() => {
     const m = new Map<string, string>();
@@ -583,7 +570,11 @@ export function ScheduleCalendar({
   useEffect(() => {
     if (!calendarApp) return;
     calendarApp.events.set([
-      ...mapRowsToCalendarEvents(rows, access, metaColorByCollaboratorId),
+      ...mapRowsToCalendarEvents(
+        visibleRows,
+        access,
+        metaColorByCollaboratorId,
+      ),
       ...holidayEvents,
       ...birthdayEvents,
     ]);
@@ -593,7 +584,7 @@ export function ScheduleCalendar({
     calendarApp,
     holidayEvents,
     metaColorByCollaboratorId,
-    rows,
+    visibleRows,
   ]);
 
   async function handleCreateSubmit(e: React.FormEvent) {
@@ -628,19 +619,7 @@ export function ScheduleCalendar({
         return;
       }
 
-      const assignedId = formCollaborator.id;
-      const filterMismatch =
-        access === "admin" &&
-        collaboratorFilterId !== null &&
-        collaboratorFilterId !== assignedId;
-
-      if (filterMismatch) {
-        onEventCreated?.(assignedId);
-      }
-
-      const refreshed = filterMismatch
-        ? await refresh({ collaboratorFilterId: null })
-        : await refresh();
+      const refreshed = await refresh();
 
       if (!refreshed) {
         alert(

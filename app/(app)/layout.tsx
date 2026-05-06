@@ -2,7 +2,11 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { signOut } from "@/app/actions/auth";
 import { listMyNotifications } from "@/app/actions/notifications";
+import { listCollaboratorCalendarMeta } from "@/app/actions/users";
+import { CollaboratorVisibilityProvider } from "@/components/collaborator-visibility-context";
 import { NotificationBell } from "@/components/notification-bell";
+import { SidebarCollaboratorLayers } from "@/components/sidebar-collaborator-layers";
+import type { CollaboratorCalendarMeta } from "@/lib/types/database";
 
 export const dynamic = "force-dynamic";
 import { getSessionContext } from "@/lib/auth/session";
@@ -20,7 +24,13 @@ export default async function AppLayout({
   const isAdmin = ctx.profile.role === "admin";
   const canManage = isAdmin && ctx.profile.can_manage_users;
 
-  return (
+  let collaboratorMetaSidebar: CollaboratorCalendarMeta[] = [];
+  if (isAdmin) {
+    const metaRes = await listCollaboratorCalendarMeta();
+    collaboratorMetaSidebar = metaRes.ok ? metaRes.data ?? [] : [];
+  }
+
+  const shell = (
     <div className="flex min-h-screen bg-white text-zinc-900">
       <aside className="flex w-56 shrink-0 flex-col border-r border-zinc-200 bg-white px-3 py-6">
         <div className="mb-8 px-2 text-sm font-semibold text-[#4285F4]">
@@ -60,8 +70,11 @@ export default async function AppLayout({
               <UserCog className="h-4 w-4" />
               Equipe
             </Link>
+            
           )}
+          {isAdmin && <SidebarCollaboratorLayers />}
         </nav>
+
         <form action={signOut} className="mt-4 border-t  border-zinc-100 pt-4">
           <button
             type="submit"
@@ -93,4 +106,17 @@ export default async function AppLayout({
       </div>
     </div>
   );
+
+  if (isAdmin) {
+    return (
+      <CollaboratorVisibilityProvider
+        userId={ctx.userId}
+        members={collaboratorMetaSidebar}
+      >
+        {shell}
+      </CollaboratorVisibilityProvider>
+    );
+  }
+
+  return shell;
 }
