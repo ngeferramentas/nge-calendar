@@ -786,24 +786,8 @@ export function ScheduleCalendar({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={() => {
-            setFormAdminOnly(false);
-            setCreateOpen(true);
-          }}
-          className="rounded-lg bg-[#4285F4] px-4 py-2 text-sm font-medium text-white hover:opacity-95"
-        >
-          Novo evento
-        </button>
-        <button
-          type="button"
-          onClick={() => setClientModalOpen(true)}
-          className="rounded-lg bg-[#4285F4] px-4 py-2 text-sm font-medium text-white hover:opacity-95"
-        >
-          Novo cliente
-        </button>
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="text-xl font-semibold text-zinc-900">Agenda</h2>
         <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-600">
           {VISIBLE_STATUS_LEGEND.map((s) => (
             <span key={s} className="inline-flex items-center gap-1">
@@ -814,6 +798,25 @@ export function ScheduleCalendar({
               {EVENT_STATUS_LABELS[s]}
             </span>
           ))}
+        </div>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setFormAdminOnly(false);
+              setCreateOpen(true);
+            }}
+            className="rounded-lg bg-[#4285F4] px-4 py-2 text-sm font-medium text-white hover:opacity-95"
+          >
+            Novo evento
+          </button>
+          <button
+            type="button"
+            onClick={() => setClientModalOpen(true)}
+            className="rounded-lg bg-[#4285F4] px-4 py-2 text-sm font-medium text-white hover:opacity-95"
+          >
+            Novo cliente
+          </button>
         </div>
       </div>
 

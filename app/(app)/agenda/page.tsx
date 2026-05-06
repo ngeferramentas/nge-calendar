@@ -18,7 +18,6 @@ export default async function AgendaPage() {
 
   return (
     <div>
-      <h2 className="mb-6 text-xl font-semibold text-zinc-900">Agenda</h2>
       <AgendaView
         access={ctx.profile.role}
         userId={ctx.userId}
