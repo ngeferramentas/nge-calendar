@@ -14,6 +14,10 @@ import {
   type CalendarType,
 } from "@schedule-x/calendar";
 import "@schedule-x/theme-default/dist/index.css";
+
+/** One calendar instance: show month/week grids on small screens (phones only; see isCalendarSmall). */
+viewMonthGrid.hasSmallScreenCompat = true;
+viewWeek.hasSmallScreenCompat = true;
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   approveAndAssignEvent,
@@ -515,6 +519,25 @@ export function ScheduleCalendar({
       nEventsPerDay: 4,
     },
     callbacks: {
+      isCalendarSmall: ($app) => {
+        if (
+          typeof window !== "undefined" &&
+          window.matchMedia("(min-width: 768px)").matches
+        ) {
+          return false;
+        }
+        const calendarRoot = $app.elements.calendarWrapper;
+        if (!calendarRoot) return false;
+        const documentRoot = document.documentElement;
+        const documentFontSize = +window
+          .getComputedStyle(documentRoot)
+          .fontSize.split("p")[0];
+        const breakPointFor1RemEquals16px = 700;
+        const multiplier = 16 / documentFontSize;
+        const smallCalendarBreakpoint =
+          breakPointFor1RemEquals16px / multiplier;
+        return calendarRoot.clientWidth < smallCalendarBreakpoint;
+      },
       onEventClick: (calEvent) => {
         const sid = String(calEvent.id);
         if (sid.startsWith("holiday:")) return;
@@ -786,9 +809,9 @@ export function ScheduleCalendar({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-col gap-3 md:flex-row md:flex-wrap md:items-center">
         <h2 className="text-xl font-semibold text-zinc-900">Agenda</h2>
-        <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-600">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-600 md:gap-3">
           {VISIBLE_STATUS_LEGEND.map((s) => (
             <span key={s} className="inline-flex items-center gap-1">
               <span
@@ -799,28 +822,28 @@ export function ScheduleCalendar({
             </span>
           ))}
         </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
+        <div className="flex w-full flex-col gap-2 md:ml-auto md:w-auto md:flex-row md:flex-wrap md:items-center md:gap-2">
           <button
             type="button"
             onClick={() => {
               setFormAdminOnly(false);
               setCreateOpen(true);
             }}
-            className="rounded-lg bg-[#4285F4] px-4 py-2 text-sm font-medium text-white hover:opacity-95"
+            className="rounded-lg bg-[#4285F4] px-4 py-2 text-sm font-medium text-white hover:opacity-95 max-md:w-full"
           >
             Novo evento
           </button>
           <button
             type="button"
             onClick={() => setClientModalOpen(true)}
-            className="rounded-lg bg-[#4285F4] px-4 py-2 text-sm font-medium text-white hover:opacity-95"
+            className="rounded-lg bg-[#4285F4] px-4 py-2 text-sm font-medium text-white hover:opacity-95 max-md:w-full"
           >
             Novo cliente
           </button>
         </div>
       </div>
 
-      <div className="min-h-[720px] w-full rounded-xl border border-zinc-200 bg-white p-2 shadow-sm [&_.sx__calendar-wrapper]:min-h-[680px] [&_.sx__month-grid-event]:min-w-0 [&_.sx__month-grid-event]:max-w-full [&_.sx__month-grid-event]:shrink [&_.sx__month-grid-day__events]:min-w-0">
+      <div className="min-h-[max(50vh,420px)] w-full rounded-xl border border-zinc-200 bg-white p-2 shadow-sm md:min-h-[720px] [&_.sx__calendar-wrapper]:min-h-[max(45vh,380px)] md:[&_.sx__calendar-wrapper]:min-h-[680px] [&_.sx__month-grid-event]:min-w-0 [&_.sx__month-grid-event]:max-w-full [&_.sx__month-grid-event]:shrink [&_.sx__month-grid-day__events]:min-w-0">
         {calendarApp && <ScheduleXCalendar calendarApp={calendarApp} />}
       </div>
 
