@@ -96,6 +96,17 @@ export type NotificationRow = {
   created_at: string;
 };
 
+export type TaskRow = {
+  id: string;
+  title: string;
+  created_by: string;
+  assignee_id: string;
+  created_at: string;
+  updated_at: string;
+  creator_profile?: { full_name: string } | null;
+  assignee_profile?: { full_name: string } | null;
+};
+
 export type EventEditRequestStatus = "pending" | "approved" | "rejected";
 
 /** JSON payload for collaborator edit requests; mirrors allowed fields in validations. */

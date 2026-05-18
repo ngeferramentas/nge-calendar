@@ -1,10 +1,25 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { signOut } from "@/app/actions/auth";
 import { SidebarCollaboratorLayers } from "@/components/sidebar-collaborator-layers";
-import { BellRing, Calendar, LogOut, Menu, UserCog, Users } from "lucide-react";
+import {
+  BellRing,
+  Calendar,
+  ListTodo,
+  LogOut,
+  Menu,
+  UserCog,
+  Users,
+} from "lucide-react";
 import { useEffect, useState } from "react";
+
+function navLinkClass(active: boolean): string {
+  return active
+    ? "flex items-center gap-2 rounded-lg px-3 py-2 bg-[#4285F4]/10 font-medium text-[#4285F4]"
+    : "flex items-center gap-2 rounded-lg px-3 py-2 text-zinc-700 hover:bg-zinc-50";
+}
 
 type ResponsiveAppShellProps = {
   roleLabel: string;
@@ -23,6 +38,7 @@ export function ResponsiveAppShell({
   isAdmin,
   canManage,
 }: ResponsiveAppShellProps) {
+  const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
@@ -33,9 +49,6 @@ export function ResponsiveAppShell({
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
   }, []);
-
-  const navLinkClass =
-    "flex items-center gap-2 rounded-lg px-3 py-2 text-zinc-700 hover:bg-zinc-50";
 
   return (
     <div className="flex min-h-screen bg-white text-zinc-900">
@@ -62,16 +75,24 @@ export function ResponsiveAppShell({
         <nav className="flex flex-1 flex-col gap-1 text-sm">
           <Link
             href="/agenda"
-            className={navLinkClass}
+            className={navLinkClass(pathname === "/agenda")}
             onClick={() => setDrawerOpen(false)}
           >
             <Calendar className="h-4 w-4" />
             Agenda
           </Link>
+          <Link
+            href="/tarefas"
+            className={navLinkClass(pathname === "/tarefas")}
+            onClick={() => setDrawerOpen(false)}
+          >
+            <ListTodo className="h-4 w-4" />
+            Tarefas
+          </Link>
           {isAdmin ? (
             <Link
               href="/clientes"
-              className={navLinkClass}
+              className={navLinkClass(pathname === "/clientes")}
               onClick={() => setDrawerOpen(false)}
             >
               <Users className="h-4 w-4" />
@@ -81,7 +102,7 @@ export function ResponsiveAppShell({
           {canManage ? (
             <Link
               href="/acoes"
-              className={navLinkClass}
+              className={navLinkClass(pathname === "/acoes")}
               onClick={() => setDrawerOpen(false)}
             >
               <BellRing className="h-4 w-4" />
@@ -91,7 +112,7 @@ export function ResponsiveAppShell({
           {canManage ? (
             <Link
               href="/equipe"
-              className={navLinkClass}
+              className={navLinkClass(pathname === "/equipe")}
               onClick={() => setDrawerOpen(false)}
             >
               <UserCog className="h-4 w-4" />
