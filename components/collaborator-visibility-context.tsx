@@ -42,7 +42,7 @@ export type CollaboratorVisibilityContextValue = {
   hiddenIds: ReadonlySet<string>;
   toggle: (collaboratorId: string) => void;
   isVisible: (collaboratorId: string) => boolean;
-  isEventRowVisible: (collaboratorId: string | null) => boolean;
+  isEventRowVisible: (collaboratorIds: string | null | string[]) => boolean;
 };
 
 const CollaboratorVisibilityContext =
@@ -90,9 +90,14 @@ export function CollaboratorVisibilityProvider({
   );
 
   const isEventRowVisible = useCallback(
-    (collaboratorId: string | null) => {
-      if (!collaboratorId) return true;
-      return !hiddenSet.has(collaboratorId);
+    (collaboratorIds: string | null | string[]) => {
+      const ids = Array.isArray(collaboratorIds)
+        ? collaboratorIds
+        : collaboratorIds
+          ? [collaboratorIds]
+          : [];
+      if (ids.length === 0) return true;
+      return ids.some((id) => !hiddenSet.has(id));
     },
     [hiddenSet],
   );

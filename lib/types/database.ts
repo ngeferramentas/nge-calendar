@@ -70,6 +70,10 @@ export type EventRow = {
     bairro: string;
   } | null;
   collaborator_profile?: { calendar_color: string; full_name?: string } | null;
+  event_collaborators?: {
+    collaborator_id: string;
+    profiles?: { calendar_color: string; full_name?: string } | null;
+  }[];
 };
 
 export type AuditLogRow = {
@@ -99,6 +103,7 @@ export type EventEditRequestPayload = {
   title?: string;
   description?: string;
   clientId?: string;
+  collaboratorIds?: string[];
   startsAt?: string;
   endsAt?: string;
 };

@@ -8,6 +8,12 @@ import {
   requireUserManager,
   type SessionContext,
 } from "@/lib/auth/session";
+import {
+  getEventCollaboratorIds,
+  primaryCollaboratorId,
+  syncEventCollaborators,
+  uniqueCollaboratorIds,
+} from "@/lib/events/collaborators";
 import { assertNoTimeOverlap } from "@/lib/events/overlap";
 import { scheduleEventReminder } from "@/lib/reminders/qstash";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -130,12 +136,41 @@ async function notifyManagersForPendingEventEdit(params: {
   await params.supabase.from("notifications").insert(rows);
 }
 
+const EVENT_SELECT =
+  "*, clients(full_name, document_normalized, address_line, bairro), collaborator_profile:profiles!events_collaborator_id_fkey(calendar_color, full_name), event_collaborators(collaborator_id, profiles(full_name, calendar_color))";
+
 function collaboratorMayRequestEdit(ctx: SessionContext, row: EventRow): boolean {
   if (ctx.profile.role !== "collaborator") return false;
+  const assignees = getEventCollaboratorIds(row);
   return (
-    row.collaborator_id === ctx.userId ||
+    assignees.includes(ctx.userId) ||
     (row.created_by === ctx.userId && row.status === "pending_approval")
   );
+}
+
+async function notifyNewCollaboratorAssignments(params: {
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
+  createdBy: string;
+  eventId: string;
+  title: string;
+  previousIds: string[];
+  nextIds: string[];
+  adminOnly: boolean;
+  messageOverride?: string;
+}): Promise<void> {
+  if (params.adminOnly) return;
+  const prev = new Set(params.previousIds);
+  const added = params.nextIds.filter((id) => !prev.has(id));
+  for (const recipientId of added) {
+    await notifyCollaboratorAssignment({
+      supabase: params.supabase,
+      recipientId,
+      createdBy: params.createdBy,
+      eventId: params.eventId,
+      title: params.title,
+      messageOverride: params.messageOverride,
+    });
+  }
 }
 
 type EventUpdatePatch = Omit<UpdateEventInput, "id">;
@@ -149,15 +184,17 @@ async function applyEventUpdateFromPatch(
 ): Promise<void> {
   const startsAt = patch.startsAt ?? row.starts_at;
   const endsAt = patch.endsAt ?? row.ends_at;
-  const collaboratorId =
-    patch.collaboratorId !== undefined
-      ? patch.collaboratorId
-      : row.collaborator_id;
+  const previousIds = getEventCollaboratorIds(row);
+  const nextIds =
+    patch.collaboratorIds !== undefined
+      ? uniqueCollaboratorIds(patch.collaboratorIds)
+      : previousIds;
+  const collaboratorId = primaryCollaboratorId(nextIds);
 
   await assertNoTimeOverlap({
     startsAt,
     endsAt,
-    collaboratorId,
+    collaboratorIds: nextIds,
     excludeEventId: id,
   });
 
@@ -168,9 +205,9 @@ async function applyEventUpdateFromPatch(
   if (patch.description !== undefined) updates.description = patch.description;
   if (patch.clientId !== undefined) updates.client_id = patch.clientId;
   if (patch.adminOnly !== undefined) updates.admin_only = patch.adminOnly;
-  if (patch.collaboratorId !== undefined) {
-    updates.collaborator_id = patch.collaboratorId;
-    if (patch.collaboratorId && !row.assigned_at) {
+  if (patch.collaboratorIds !== undefined) {
+    updates.collaborator_id = collaboratorId;
+    if (collaboratorId && !row.assigned_at) {
       updates.assigned_at = new Date().toISOString();
     }
   }
@@ -188,6 +225,10 @@ async function applyEventUpdateFromPatch(
   const { error } = await supabase.from("events").update(updates).eq("id", id);
 
   if (error) throw error;
+
+  if (patch.collaboratorIds !== undefined) {
+    await syncEventCollaborators(supabase, id, nextIds);
+  }
 
   await appendAuditLog(supabase, {
     entityType: "event",
@@ -210,18 +251,15 @@ async function applyEventUpdateFromPatch(
   }
   const nextAdminOnly =
     patch.adminOnly !== undefined ? patch.adminOnly : row.admin_only === true;
-  if (
-    patch.collaboratorId !== undefined &&
-    patch.collaboratorId &&
-    patch.collaboratorId !== row.collaborator_id &&
-    !nextAdminOnly
-  ) {
-    await notifyCollaboratorAssignment({
+  if (patch.collaboratorIds !== undefined) {
+    await notifyNewCollaboratorAssignments({
       supabase,
-      recipientId: patch.collaboratorId,
       createdBy: adminCtx.userId,
       eventId: id,
       title: patch.title ?? row.title,
+      previousIds,
+      nextIds,
+      adminOnly: nextAdminOnly,
     });
   }
 }
@@ -244,7 +282,8 @@ export async function createEvent(
     const adminOnly = isAdmin && input.adminOnly;
 
     let status: EventStatus;
-    const collaboratorId = input.collaboratorId;
+    const collaboratorIds = uniqueCollaboratorIds(input.collaboratorIds);
+    const collaboratorId = primaryCollaboratorId(collaboratorIds);
     let assignedAt: string | null = null;
     let approvedAt: string | null = null;
     let approvedBy: string | null = null;
@@ -263,7 +302,7 @@ export async function createEvent(
     await assertNoTimeOverlap({
       startsAt: input.startsAt,
       endsAt: input.endsAt,
-      collaboratorId,
+      collaboratorIds,
     });
 
     const { data, error } = await supabase
@@ -287,11 +326,13 @@ export async function createEvent(
 
     if (error) throw error;
 
+    await syncEventCollaborators(supabase, data.id, collaboratorIds);
+
     await appendAuditLog(supabase, {
       entityType: "event",
       entityId: data.id,
       action: "create",
-      metadata: { status, collaboratorId, adminOnly },
+      metadata: { status, collaboratorIds, adminOnly },
     });
 
     if (collaboratorId && status === "assigned") {
@@ -304,13 +345,15 @@ export async function createEvent(
         // Reminders should never block event creation.
       }
     }
-    if (collaboratorId && status === "assigned" && !adminOnly) {
-      await notifyCollaboratorAssignment({
+    if (status === "assigned" && !adminOnly) {
+      await notifyNewCollaboratorAssignments({
         supabase,
-        recipientId: collaboratorId,
         createdBy: ctx.userId,
         eventId: data.id,
         title: input.title ?? "",
+        previousIds: [],
+        nextIds: collaboratorIds,
+        adminOnly,
       });
     }
     if (!isAdmin && status === "pending_approval") {
@@ -377,7 +420,8 @@ export async function approveAndAssignEvent(
     }
 
     const supabase = await createSupabaseServerClient();
-    const { eventId, collaboratorId } = parsed.data;
+    const { eventId, collaboratorIds } = parsed.data;
+    const collaboratorId = primaryCollaboratorId(collaboratorIds);
 
     const { data: existing, error: fetchErr } = await supabase
       .from("events")
@@ -397,7 +441,7 @@ export async function approveAndAssignEvent(
     await assertNoTimeOverlap({
       startsAt: row.starts_at,
       endsAt: row.ends_at,
-      collaboratorId,
+      collaboratorIds,
       excludeEventId: eventId,
     });
 
@@ -415,11 +459,13 @@ export async function approveAndAssignEvent(
 
     if (error) throw error;
 
+    await syncEventCollaborators(supabase, eventId, collaboratorIds);
+
     await appendAuditLog(supabase, {
       entityType: "event",
       entityId: eventId,
       action: "approve_assign",
-      metadata: { collaboratorId },
+      metadata: { collaboratorIds },
     });
 
     try {
@@ -431,12 +477,14 @@ export async function approveAndAssignEvent(
       // Reminders should never block event approval and assignment.
     }
     if (row.admin_only !== true) {
-      await notifyCollaboratorAssignment({
+      await notifyNewCollaboratorAssignments({
         supabase,
-        recipientId: collaboratorId,
         createdBy: ctx!.userId,
         eventId,
         title: row.title,
+        previousIds: getEventCollaboratorIds(row),
+        nextIds: collaboratorIds,
+        adminOnly: false,
         messageOverride: "Seu agendamento foi aprovado.",
       });
     }
@@ -546,10 +594,15 @@ export async function requestEventEdit(raw: unknown): Promise<ActionResult> {
       return { ok: false, error: "O horário de fim deve ser após o início." };
     }
 
+    const nextCollaboratorIds =
+      fields.collaboratorIds !== undefined
+        ? uniqueCollaboratorIds(fields.collaboratorIds)
+        : getEventCollaboratorIds(row);
+
     await assertNoTimeOverlap({
       startsAt,
       endsAt,
-      collaboratorId: row.collaborator_id,
+      collaboratorIds: nextCollaboratorIds,
       excludeEventId: eventId,
     });
 
@@ -557,6 +610,9 @@ export async function requestEventEdit(raw: unknown): Promise<ActionResult> {
     if (fields.title !== undefined) payload.title = fields.title;
     if (fields.description !== undefined) payload.description = fields.description;
     if (fields.clientId !== undefined) payload.clientId = fields.clientId;
+    if (fields.collaboratorIds !== undefined) {
+      payload.collaboratorIds = nextCollaboratorIds;
+    }
     if (fields.startsAt !== undefined) payload.startsAt = fields.startsAt;
     if (fields.endsAt !== undefined) payload.endsAt = fields.endsAt;
 
@@ -625,7 +681,8 @@ export async function listPendingEventEditRequests(): Promise<
         event:events!event_id (
           *,
           clients (full_name, document_normalized, address_line, bairro),
-          collaborator_profile:profiles!events_collaborator_id_fkey (calendar_color, full_name)
+          collaborator_profile:profiles!events_collaborator_id_fkey (calendar_color, full_name),
+          event_collaborators (collaborator_id, profiles (full_name, calendar_color))
         ),
         requester:profiles!event_edit_requests_requested_by_fkey (full_name)
       `,
@@ -683,6 +740,7 @@ export async function approveEventEditRequest(
       title: payload.title,
       description: payload.description,
       clientId: payload.clientId,
+      collaboratorIds: payload.collaboratorIds,
       startsAt: payload.startsAt,
       endsAt: payload.endsAt,
     };
@@ -776,20 +834,17 @@ export async function listEventsForUser(params?: {
 
     const supabase = await createSupabaseServerClient();
 
-    const eventSelect =
-      "*, clients(full_name, document_normalized, address_line, bairro), collaborator_profile:profiles!events_collaborator_id_fkey(calendar_color, full_name)";
-
     if (ctx.profile.role === "collaborator") {
       const { data, error } = await supabase
         .from("events")
-        .select(eventSelect)
+        .select(EVENT_SELECT)
         .eq("admin_only", false)
         .order("starts_at");
       if (error) throw error;
       return { ok: true, data: (data ?? []) as EventRow[] };
     }
 
-    let q = supabase.from("events").select(eventSelect).order("starts_at");
+    let q = supabase.from("events").select(EVENT_SELECT).order("starts_at");
     if (params?.collaboratorFilterId) {
       q = q.eq("collaborator_id", params.collaboratorFilterId);
     }
@@ -808,12 +863,11 @@ export async function listPendingApprovalEvents(): Promise<ActionResult<EventRow
     requireUserManager(ctx);
 
     const supabase = await createSupabaseServerClient();
-    const eventSelect =
-      "*, clients(full_name, document_normalized, address_line, bairro), collaborator_profile:profiles!events_collaborator_id_fkey(calendar_color, full_name), creator_profile:profiles!events_created_by_fkey(role, full_name)";
+    const pendingSelect = `${EVENT_SELECT}, creator_profile:profiles!events_created_by_fkey(role, full_name)`;
 
     const { data, error } = await supabase
       .from("events")
-      .select(eventSelect)
+      .select(pendingSelect)
       .eq("status", "pending_approval")
       .order("starts_at");
     if (error) throw error;

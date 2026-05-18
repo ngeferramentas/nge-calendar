@@ -10,6 +10,7 @@ import {
   viewWeek,
   viewDay,
   viewMonthGrid,
+  type CalendarApp,
   type CalendarEvent,
   type CalendarType,
 } from "@schedule-x/calendar";
@@ -38,10 +39,13 @@ import type {
 import { eventStatusColor, EVENT_STATUS_LABELS } from "@/lib/types/database";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { ClientCombobox } from "@/components/client-combobox";
+import type { CollaboratorOption } from "@/components/collaborator-combobox";
+import { CollaboratorMultiPicker } from "@/components/collaborator-multi-picker";
 import {
-  CollaboratorCombobox,
-  type CollaboratorOption,
-} from "@/components/collaborator-combobox";
+  formatEventCollaboratorNames,
+  getEventCollaboratorIds,
+  resolveCollaboratorDisplayName,
+} from "@/lib/events/collaborators";
 import { ClientCreateModal } from "@/components/client-create-modal";
 import { useCollaboratorVisibility } from "@/components/collaborator-visibility-context";
 import type { ClientRow } from "@/lib/types/database";
@@ -157,11 +161,21 @@ function collaboratorCalendarFromHex(
   };
 }
 
+function syncCalendarSelectedDate(
+  calendarApp: CalendarApp,
+  date: Temporal.PlainDate,
+) {
+  const app = calendarApp as unknown as {
+    $app: { datePickerState: { selectedDate: { value: Temporal.PlainDate } } };
+  };
+  app.$app.datePickerState.selectedDate.value = date;
+}
+
 function eventCalendarId(
   e: EventRow,
   metaColorByCollaboratorId: ReadonlyMap<string, string>,
 ): string {
-  const cid = e.collaborator_id;
+  const cid = getEventCollaboratorIds(e)[0] ?? e.collaborator_id;
   if (!cid) return e.status;
 
   const fromEmbed = e.collaborator_profile?.calendar_color?.trim();
@@ -180,16 +194,17 @@ function mapRowsToCalendarEvents(
   rows: EventRow[],
   access: UserRole,
   metaColorByCollaboratorId: ReadonlyMap<string, string>,
+  nameById: ReadonlyMap<string, string>,
 ): CalendarEvent[] {
   return rows.map((e) => {
     const clientLabel = e.clients?.full_name
       ? `${e.clients.full_name} (${e.clients.document_normalized})`
       : e.client_id;
-    const collaboratorName = e.collaborator_profile?.full_name?.trim();
+    const collaboratorNames = formatEventCollaboratorNames(e, nameById);
     const title =
       e.title?.trim() ||
       `${EVENT_STATUS_LABELS[e.status]} · ${clientLabel}`;
-    const badge = collaboratorName ? ` · ${collaboratorName}` : "";
+    const badge = collaboratorNames ? ` · ${collaboratorNames}` : "";
     const privateTag =
       access === "admin" && e.admin_only === true ? " · [só admins]" : "";
     return {
@@ -322,21 +337,25 @@ export function ScheduleCalendar({
   const [adminOpen, setAdminOpen] = useState<EventRow | null>(null);
   const [detailOpen, setDetailOpen] = useState<EventRow | null>(null);
   const [editOpen, setEditOpen] = useState<EventRow | null>(null);
-  const [assignId, setAssignId] = useState<string>("");
+  const [assignCollaborators, setAssignCollaborators] = useState<
+    CollaboratorOption[]
+  >([]);
 
   const [formTitle, setFormTitle] = useState("");
   const [formDesc, setFormDesc] = useState("");
   const [formClient, setFormClient] = useState<ClientRow | null>(null);
-  const [formCollaborator, setFormCollaborator] =
-    useState<CollaboratorOption | null>(null);
+  const [formCollaborators, setFormCollaborators] = useState<
+    CollaboratorOption[]
+  >([]);
   const [formStart, setFormStart] = useState("");
   const [formEnd, setFormEnd] = useState("");
   const [formAdminOnly, setFormAdminOnly] = useState(false);
   const [editFormTitle, setEditFormTitle] = useState("");
   const [editFormDesc, setEditFormDesc] = useState("");
   const [editFormClient, setEditFormClient] = useState<ClientRow | null>(null);
-  const [editFormCollaborator, setEditFormCollaborator] =
-    useState<CollaboratorOption | null>(null);
+  const [editFormCollaborators, setEditFormCollaborators] = useState<
+    CollaboratorOption[]
+  >([]);
   const [editFormStart, setEditFormStart] = useState("");
   const [editFormEnd, setEditFormEnd] = useState("");
   const [editFormAdminOnly, setEditFormAdminOnly] = useState(false);
@@ -344,6 +363,7 @@ export function ScheduleCalendar({
   const [clientModalOpen, setClientModalOpen] = useState(false);
   const [holidayEvents, setHolidayEvents] = useState<CalendarEvent[]>([]);
   const rowsRef = useRef(rows);
+  const calendarAppRef = useRef<CalendarApp | null>(null);
 
   const refresh = useCallback(async (): Promise<boolean> => {
     const res = await listEventsForUser({});
@@ -471,9 +491,32 @@ export function ScheduleCalendar({
   const visibleRows = useMemo(() => {
     if (access !== "admin" || !collaboratorVisibility) return rows;
     return rows.filter((r) =>
-      collaboratorVisibility.isEventRowVisible(r.collaborator_id),
+      collaboratorVisibility.isEventRowVisible(getEventCollaboratorIds(r)),
     );
   }, [access, collaboratorVisibility, rows]);
+
+  const nameByCollaboratorId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of collaborators) {
+      if (c.full_name?.trim()) m.set(c.id, c.full_name.trim());
+    }
+    for (const c of collaboratorMeta) {
+      if (c.full_name?.trim()) m.set(c.id, c.full_name.trim());
+    }
+    return m;
+  }, [collaborators, collaboratorMeta]);
+
+  const rowToCollaboratorOptions = useCallback(
+    (row: EventRow): CollaboratorOption[] =>
+      getEventCollaboratorIds(row).map((id) => ({
+        id,
+        full_name:
+          collaborators.find((c) => c.id === id)?.full_name?.trim() ||
+          nameByCollaboratorId.get(id) ||
+          id,
+      })),
+    [collaborators, nameByCollaboratorId],
+  );
 
   const metaColorByCollaboratorId = useMemo(() => {
     const m = new Map<string, string>();
@@ -547,10 +590,14 @@ export function ScheduleCalendar({
         setDetailOpen(row);
       },
       onClickDate: (date) => {
+        const app = calendarAppRef.current;
+        if (app) syncCalendarSelectedDate(app, date);
         prefillCreateDate(date);
         setCreateOpen(true);
       },
       onClickDateTime: (dateTime) => {
+        const app = calendarAppRef.current;
+        if (app) syncCalendarSelectedDate(app, dateTime.toPlainDate());
         setFormAdminOnly(false);
         const end = dateTime.add({ minutes: 30 });
         const format = (zdt: Temporal.ZonedDateTime) => {
@@ -591,12 +638,17 @@ export function ScheduleCalendar({
   });
 
   useEffect(() => {
+    calendarAppRef.current = calendarApp;
+  }, [calendarApp]);
+
+  useEffect(() => {
     if (!calendarApp) return;
     calendarApp.events.set([
       ...mapRowsToCalendarEvents(
         visibleRows,
         access,
         metaColorByCollaboratorId,
+        nameByCollaboratorId,
       ),
       ...holidayEvents,
       ...birthdayEvents,
@@ -607,6 +659,7 @@ export function ScheduleCalendar({
     calendarApp,
     holidayEvents,
     metaColorByCollaboratorId,
+    nameByCollaboratorId,
     visibleRows,
   ]);
 
@@ -616,8 +669,8 @@ export function ScheduleCalendar({
       alert("Selecione um cliente.");
       return;
     }
-    if (!formCollaborator) {
-      alert("Selecione um colaborador.");
+    if (formCollaborators.length === 0) {
+      alert("Selecione ao menos um colaborador.");
       return;
     }
     if (!formStart || !formEnd) {
@@ -632,7 +685,7 @@ export function ScheduleCalendar({
         title: formTitle,
         description: formDesc,
         clientId: formClient.id,
-        collaboratorId: formCollaborator.id,
+        collaboratorIds: formCollaborators.map((c) => c.id),
         startsAt: startIso,
         endsAt: endIso,
         adminOnly: access === "admin" && formAdminOnly,
@@ -655,7 +708,7 @@ export function ScheduleCalendar({
       setFormTitle("");
       setFormDesc("");
       setFormClient(null);
-      setFormCollaborator(null);
+      setFormCollaborators([]);
       setFormStart("");
       setFormEnd("");
       setFormAdminOnly(false);
@@ -667,11 +720,11 @@ export function ScheduleCalendar({
   }
 
   async function handleApprove() {
-    if (!adminOpen || !assignId) return;
+    if (!adminOpen || assignCollaborators.length === 0) return;
     setSaving(true);
     const res = await approveAndAssignEvent({
       eventId: adminOpen.id,
-      collaboratorId: assignId,
+      collaboratorIds: assignCollaborators.map((c) => c.id),
     });
     setSaving(false);
     if (!res.ok) {
@@ -722,10 +775,7 @@ export function ScheduleCalendar({
     setEditFormStart(isoToDatetimeLocalInput(row.starts_at));
     setEditFormEnd(isoToDatetimeLocalInput(row.ends_at));
     setEditFormAdminOnly(row.admin_only === true);
-    const collab = collaborators.find((c) => c.id === row.collaborator_id);
-    setEditFormCollaborator(
-      collab ? { id: collab.id, full_name: collab.full_name } : null,
-    );
+    setEditFormCollaborators(rowToCollaboratorOptions(row));
     setEditFormClient(null);
     void (async () => {
       const res = await getClientById(row.client_id);
@@ -740,8 +790,8 @@ export function ScheduleCalendar({
       alert("Selecione um cliente.");
       return;
     }
-    if (access === "admin" && !editFormCollaborator) {
-      alert("Selecione um colaborador.");
+    if (editFormCollaborators.length === 0) {
+      alert("Selecione ao menos um colaborador.");
       return;
     }
     if (!editFormStart || !editFormEnd) {
@@ -758,7 +808,7 @@ export function ScheduleCalendar({
           title: editFormTitle,
           description: editFormDesc,
           clientId: editFormClient.id,
-          collaboratorId: editFormCollaborator!.id,
+          collaboratorIds: editFormCollaborators.map((c) => c.id),
           startsAt: startIso,
           endsAt: endIso,
           adminOnly: editFormAdminOnly,
@@ -773,6 +823,7 @@ export function ScheduleCalendar({
           title: editFormTitle,
           description: editFormDesc,
           clientId: editFormClient.id,
+          collaboratorIds: editFormCollaborators.map((c) => c.id),
           startsAt: startIso,
           endsAt: endIso,
         });
@@ -843,7 +894,7 @@ export function ScheduleCalendar({
         </div>
       </div>
 
-      <div className="min-h-[max(50vh,420px)] w-full rounded-xl border border-zinc-200 bg-white p-2 shadow-sm md:min-h-[720px] [&_.sx__calendar-wrapper]:min-h-[max(45vh,380px)] md:[&_.sx__calendar-wrapper]:min-h-[680px] [&_.sx__month-grid-event]:min-w-0 [&_.sx__month-grid-event]:max-w-full [&_.sx__month-grid-event]:shrink [&_.sx__month-grid-day__events]:min-w-0">
+      <div className="min-h-[max(50vh,420px)] w-full rounded-xl border border-zinc-200 bg-white p-2 shadow-sm md:min-h-[720px] [&_.sx__calendar-wrapper]:min-h-[max(45vh,380px)] md:[&_.sx__calendar-wrapper]:min-h-[680px] [&_.sx__month-grid-event]:min-w-0 [&_.sx__month-grid-event]:max-w-full [&_.sx__month-grid-event]:shrink [&_.sx__month-grid-event]:font-bold [&_.sx__month-grid-event-time]:font-bold [&_.sx__time-grid-event]:font-bold [&_.sx__time-grid-event-title]:font-bold [&_.sx__time-grid-event-time]:font-bold [&_.sx__month-grid-day__events]:min-w-0">
         {calendarApp && <ScheduleXCalendar calendarApp={calendarApp} />}
       </div>
 
@@ -862,9 +913,9 @@ export function ScheduleCalendar({
                 onChange={setFormClient}
                 disabled={saving}
               />
-              <CollaboratorCombobox
-                value={formCollaborator}
-                onChange={setFormCollaborator}
+              <CollaboratorMultiPicker
+                value={formCollaborators}
+                onChange={setFormCollaborators}
                 disabled={saving}
               />
               <div>
@@ -987,24 +1038,22 @@ export function ScheduleCalendar({
                 onChange={setEditFormClient}
                 disabled={saving}
               />
+              <CollaboratorMultiPicker
+                value={editFormCollaborators}
+                onChange={setEditFormCollaborators}
+                disabled={saving}
+              />
               {access === "admin" && (
-                <>
-                  <CollaboratorCombobox
-                    value={editFormCollaborator}
-                    onChange={setEditFormCollaborator}
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-zinc-800">
+                  <input
+                    type="checkbox"
+                    checked={editFormAdminOnly}
+                    onChange={(e) => setEditFormAdminOnly(e.target.checked)}
                     disabled={saving}
+                    className="rounded border-zinc-300"
                   />
-                  <label className="flex cursor-pointer items-center gap-2 text-sm text-zinc-800">
-                    <input
-                      type="checkbox"
-                      checked={editFormAdminOnly}
-                      onChange={(e) => setEditFormAdminOnly(e.target.checked)}
-                      disabled={saving}
-                      className="rounded border-zinc-300"
-                    />
-                    Visível apenas para administradores
-                  </label>
-                </>
+                  Visível apenas para administradores
+                </label>
               )}
               <div>
                 <label className="mb-1 block text-sm font-medium">Título</label>
@@ -1129,18 +1178,37 @@ export function ScheduleCalendar({
                   apenas administradores
                 </p>
               )}
-              {detailOpen.collaborator_id && (
-                <p className="flex items-center gap-2">
-                  <span className="font-medium text-zinc-900">Colaborador:</span>
-                  <span
-                    className="inline-block h-3 w-3 rounded-full"
-                    style={{
-                      backgroundColor:
-                        detailOpen.collaborator_profile?.calendar_color ?? "#4285F4",
-                    }}
-                  />
-                  {detailOpen.collaborator_profile?.full_name ?? detailOpen.collaborator_id}
-                </p>
+              {getEventCollaboratorIds(detailOpen).length > 0 && (
+                <div>
+                  <span className="font-medium text-zinc-900">Colaboradores:</span>
+                  <ul className="mt-1 space-y-1">
+                    {getEventCollaboratorIds(detailOpen).map((cid) => {
+                      const fromJunction = detailOpen.event_collaborators?.find(
+                        (ec) => ec.collaborator_id === cid,
+                      );
+                      const color =
+                        fromJunction?.profiles?.calendar_color ??
+                        (detailOpen.collaborator_id === cid
+                          ? detailOpen.collaborator_profile?.calendar_color
+                          : undefined) ??
+                        metaColorByCollaboratorId.get(cid) ??
+                        "#4285F4";
+                      return (
+                        <li key={cid} className="flex items-center gap-2">
+                          <span
+                            className="inline-block h-3 w-3 shrink-0 rounded-full"
+                            style={{ backgroundColor: color }}
+                          />
+                          {resolveCollaboratorDisplayName(
+                            cid,
+                            detailOpen,
+                            nameByCollaboratorId,
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
               )}
               {detailOpen.description?.trim() && (
                 <p>
@@ -1166,7 +1234,17 @@ export function ScheduleCalendar({
                   className="rounded-lg bg-[#4285F4] px-4 py-2 text-sm font-medium text-white"
                   onClick={() => {
                     setAdminOpen(detailOpen);
-                    setAssignId(collaborators[0]?.id ?? "");
+                    const assigned = rowToCollaboratorOptions(detailOpen);
+                    if (assigned.length > 0) {
+                      setAssignCollaborators(assigned);
+                    } else {
+                      const fallback = collaborators[0];
+                      setAssignCollaborators(
+                        fallback
+                          ? [{ id: fallback.id, full_name: fallback.full_name }]
+                          : [],
+                      );
+                    }
                   }}
                 >
                   Aprovar/rejeitar
@@ -1202,22 +1280,13 @@ export function ScheduleCalendar({
               Aprovar evento
             </h2>
             <p className="mb-4 text-sm text-zinc-600">
-              Pendente de aprovação. Atribua a um colaborador.
+              Pendente de aprovação. Atribua a um ou mais colaboradores.
             </p>
-            <label className="mb-1 block text-sm font-medium">
-              Colaborador
-            </label>
-            <select
-              className="mb-4 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm"
-              value={assignId}
-              onChange={(e) => setAssignId(e.target.value)}
-            >
-              {collaborators.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.full_name || c.id}
-                </option>
-              ))}
-            </select>
+            <CollaboratorMultiPicker
+              value={assignCollaborators}
+              onChange={setAssignCollaborators}
+              disabled={saving}
+            />
             <div className="flex flex-wrap justify-end gap-2">
               <button
                 type="button"
@@ -1238,7 +1307,7 @@ export function ScheduleCalendar({
                 type="button"
                 className="rounded-lg bg-[#4285F4] px-4 py-2 text-sm font-medium text-white"
                 onClick={() => void handleApprove()}
-                disabled={saving || !assignId}
+                disabled={saving || assignCollaborators.length === 0}
               >
                 Aprovar e atribuir
               </button>

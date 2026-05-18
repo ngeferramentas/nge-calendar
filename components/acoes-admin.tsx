@@ -15,10 +15,17 @@ import type {
   NotificationRow,
   PendingEventEditRequestRow,
 } from "@/lib/types/database";
+import { CollaboratorMultiPicker } from "@/components/collaborator-multi-picker";
+import type { CollaboratorOption } from "@/components/collaborator-combobox";
 import { EVENT_STATUS_LABELS } from "@/lib/types/database";
 import { formatDateTimePtBr } from "@/lib/format/locale";
+import { getEventCollaboratorIds } from "@/lib/events/collaborators";
 
-type CollaboratorOption = { id: string; full_name: string; calendar_color?: string };
+type CollaboratorListItem = {
+  id: string;
+  full_name: string;
+  calendar_color?: string;
+};
 
 function summarizeEditPayload(
   payload: EventEditRequestPayload,
@@ -40,6 +47,16 @@ function summarizeEditPayload(
   if (payload.endsAt !== undefined && payload.endsAt !== event.ends_at) {
     parts.push("fim");
   }
+  if (payload.collaboratorIds !== undefined) {
+    const current = getEventCollaboratorIds(event);
+    const next = payload.collaboratorIds;
+    if (
+      current.length !== next.length ||
+      current.some((id, i) => id !== next[i])
+    ) {
+      parts.push("colaboradores");
+    }
+  }
   if (parts.length === 0) {
     return "Campos enviados (sem mudança detectada)";
   }
@@ -50,7 +67,7 @@ type Props = {
   initialPendingEvents: EventRow[];
   initialPendingEditRequests: PendingEventEditRequestRow[];
   initialNotifications: NotificationRow[];
-  collaborators: CollaboratorOption[];
+  collaborators: CollaboratorListItem[];
 };
 
 export function AcoesAdmin({
@@ -64,7 +81,9 @@ export function AcoesAdmin({
     initialPendingEditRequests,
   );
   const [notifications, setNotifications] = useState(initialNotifications);
-  const [assignByEventId, setAssignByEventId] = useState<Record<string, string>>({});
+  const [assignByEventId, setAssignByEventId] = useState<
+    Record<string, CollaboratorOption[]>
+  >({});
   const [savingId, setSavingId] = useState<string | null>(null);
   const [savingEditId, setSavingEditId] = useState<string | null>(null);
 
@@ -103,15 +122,19 @@ export function AcoesAdmin({
   }
 
   async function handleApprove(event: EventRow) {
-    const collaboratorId = assignByEventId[event.id] || defaultCollaboratorId;
-    if (!collaboratorId) {
-      alert("Selecione um colaborador.");
+    const selected =
+      assignByEventId[event.id] ??
+      (defaultCollaboratorId
+        ? [{ id: defaultCollaboratorId, full_name: "" }]
+        : []);
+    if (selected.length === 0) {
+      alert("Selecione ao menos um colaborador.");
       return;
     }
     await runAction(event.id, () =>
       approveAndAssignEvent({
         eventId: event.id,
-        collaboratorId,
+        collaboratorIds: selected.map((c) => c.id),
       }),
     );
   }
@@ -169,8 +192,29 @@ export function AcoesAdmin({
               <tbody>
                 {pendingSorted.map((event) => {
                   const currentAssign =
-                    assignByEventId[event.id] || event.collaborator_id || defaultCollaboratorId;
-                  const assignedProfile = collaborators.find((c) => c.id === currentAssign);
+                    assignByEventId[event.id] ??
+                    (() => {
+                      const ids = getEventCollaboratorIds(event);
+                      if (ids.length > 0) {
+                        return ids.map((id) => {
+                          const c = collaborators.find((x) => x.id === id);
+                          return {
+                            id,
+                            full_name: c?.full_name ?? id,
+                          };
+                        });
+                      }
+                      const fallback = collaborators.find(
+                        (c) => c.id === defaultCollaboratorId,
+                      );
+                      return fallback
+                        ? [{ id: fallback.id, full_name: fallback.full_name }]
+                        : [];
+                    })();
+                  const primaryId = currentAssign[0]?.id;
+                  const assignedProfile = collaborators.find(
+                    (c) => c.id === primaryId,
+                  );
                   const badgeColor = assignedProfile?.calendar_color ?? "#4285F4";
                   return (
                     <tr key={event.id} className="border-t border-zinc-100">
@@ -186,28 +230,22 @@ export function AcoesAdmin({
                       <td className="px-2 py-2">
                         {EVENT_STATUS_LABELS[event.status]}
                       </td>
-                      <td className="px-2 py-2">
-                        <div className="flex items-center gap-2">
+                      <td className="min-w-[220px] px-2 py-2">
+                        <div className="flex items-start gap-2">
                           <span
-                            className="inline-block h-3 w-3 rounded-full"
+                            className="mt-2 inline-block h-3 w-3 shrink-0 rounded-full"
                             style={{ backgroundColor: badgeColor }}
                           />
-                          <select
-                            className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-sm"
+                          <CollaboratorMultiPicker
                             value={currentAssign}
-                            onChange={(e) =>
+                            onChange={(next) =>
                               setAssignByEventId((prev) => ({
                                 ...prev,
-                                [event.id]: e.target.value,
+                                [event.id]: next,
                               }))
                             }
-                          >
-                            {collaborators.map((collab) => (
-                              <option key={collab.id} value={collab.id}>
-                                {collab.full_name || collab.id}
-                              </option>
-                            ))}
-                          </select>
+                            disabled={savingId === event.id}
+                          />
                         </div>
                       </td>
                       <td className="px-2 py-2">
@@ -223,7 +261,7 @@ export function AcoesAdmin({
                           <button
                             type="button"
                             onClick={() => void handleApprove(event)}
-                            disabled={savingId === event.id || !currentAssign}
+                            disabled={savingId === event.id || currentAssign.length === 0}
                             className="rounded-lg bg-[#4285F4] px-3 py-1.5 text-white disabled:opacity-50"
                           >
                             Aprovar

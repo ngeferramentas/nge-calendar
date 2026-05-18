@@ -9,12 +9,16 @@ const eventStatusSchema = z.enum([
   "rejected",
 ]);
 
+const collaboratorIdsSchema = z
+  .array(z.string().uuid())
+  .min(1, "Selecione ao menos um colaborador.");
+
 export const createEventSchema = z
   .object({
     title: z.string().max(500).optional().default(""),
     description: z.string().max(5000).optional().default(""),
     clientId: z.string().uuid(),
-    collaboratorId: z.string().uuid(),
+    collaboratorIds: collaboratorIdsSchema,
     startsAt: z.string().datetime({ offset: true }),
     endsAt: z.string().datetime({ offset: true }),
     /** Admins only; ignored for collaborators server-side */
@@ -33,7 +37,7 @@ export const updateEventSchema = z
     title: z.string().max(500).optional(),
     description: z.string().max(5000).optional(),
     clientId: z.string().uuid().optional(),
-    collaboratorId: z.string().uuid().nullable().optional(),
+    collaboratorIds: collaboratorIdsSchema.optional(),
     startsAt: z.string().datetime({ offset: true }).optional(),
     endsAt: z.string().datetime({ offset: true }).optional(),
     status: eventStatusSchema.optional(),
@@ -51,16 +55,17 @@ export const updateEventSchema = z
 
 export const approveAndAssignSchema = z.object({
   eventId: z.string().uuid(),
-  collaboratorId: z.string().uuid(),
+  collaboratorIds: collaboratorIdsSchema,
 });
 
-/** Fields collaborators may propose for approval (no status/adminOnly/collaboratorId). */
+/** Fields collaborators may propose for approval (no status/adminOnly). */
 export const requestEventEditSchema = z
   .object({
     eventId: z.string().uuid(),
     title: z.string().max(500).optional(),
     description: z.string().max(5000).optional(),
     clientId: z.string().uuid().optional(),
+    collaboratorIds: collaboratorIdsSchema.optional(),
     startsAt: z.string().datetime({ offset: true }).optional(),
     endsAt: z.string().datetime({ offset: true }).optional(),
   })
@@ -69,6 +74,7 @@ export const requestEventEditSchema = z
       d.title !== undefined ||
       d.description !== undefined ||
       d.clientId !== undefined ||
+      d.collaboratorIds !== undefined ||
       d.startsAt !== undefined ||
       d.endsAt !== undefined,
     { message: "Informe ao menos um campo para alterar.", path: ["eventId"] },
@@ -90,13 +96,14 @@ export type RequestEventEditInput = z.infer<typeof requestEventEditSchema>;
 export function resolveCreateStatus(
   isAdmin: boolean,
   requested: EventStatus | undefined,
-  collaboratorId: string | null,
+  collaboratorIds: string[],
 ): EventStatus {
   if (!isAdmin) {
     return "pending_approval";
   }
-  if (requested === "assigned" || collaboratorId) {
-    return collaboratorId ? "assigned" : (requested ?? "confirmed");
+  const primaryId = collaboratorIds[0] ?? null;
+  if (requested === "assigned" || primaryId) {
+    return primaryId ? "assigned" : (requested ?? "confirmed");
   }
   return requested ?? "confirmed";
 }
