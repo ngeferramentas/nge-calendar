@@ -22,18 +22,14 @@ function navLinkClass(active: boolean): string {
 }
 
 type ResponsiveAppShellProps = {
-  roleLabel: string;
   userHeading: string;
-  notifications: React.ReactNode;
   children: React.ReactNode;
   isAdmin: boolean;
   canManage: boolean;
 };
 
 export function ResponsiveAppShell({
-  roleLabel,
   userHeading,
-  notifications,
   children,
   isAdmin,
   canManage,
@@ -69,8 +65,13 @@ export function ResponsiveAppShell({
             : "fixed inset-y-0 left-0 z-50 -translate-x-full md:translate-x-0"
         }`}
       >
-        <div className="mb-8 px-2 text-sm font-semibold text-[#4285F4]">
+        <div className="mb-4 px-2 text-sm font-semibold text-[#4285F4]">
           NGE Calendar
+        </div>
+        <div className="mb-6 min-w-0 border-b border-zinc-100 px-2 pb-4">
+          <p className="truncate text-sm font-semibold text-zinc-900">
+            {userHeading}
+          </p>
         </div>
         <nav className="flex flex-1 flex-col gap-1 text-sm">
           <Link
@@ -134,27 +135,16 @@ export function ResponsiveAppShell({
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 py-4 md:px-8">
-          <div className="flex min-w-0 items-center gap-3">
-            <button
-              type="button"
-              className="shrink-0 rounded-lg p-2 text-zinc-700 hover:bg-zinc-100 md:hidden"
-              aria-expanded={drawerOpen}
-              aria-controls="app-sidebar-nav"
-              onClick={() => setDrawerOpen((o) => !o)}
-            >
-              <Menu className="h-5 w-5" aria-hidden />
-            </button>
-            <div className="min-w-0">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">
-                {roleLabel}
-              </p>
-              <h1 className="truncate text-lg font-semibold text-zinc-900">
-                {userHeading}
-              </h1>
-            </div>
-          </div>
-          {notifications}
+        <header className="flex items-center border-b border-zinc-200 bg-white px-4 py-3 md:hidden">
+          <button
+            type="button"
+            className="shrink-0 rounded-lg p-2 text-zinc-700 hover:bg-zinc-100"
+            aria-expanded={drawerOpen}
+            aria-controls="app-sidebar-nav"
+            onClick={() => setDrawerOpen((o) => !o)}
+          >
+            <Menu className="h-5 w-5" aria-hidden />
+          </button>
         </header>
         <main className="flex-1 p-4 md:p-8">{children}</main>
       </div>

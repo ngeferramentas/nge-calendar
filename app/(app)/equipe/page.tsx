@@ -1,4 +1,5 @@
 import { listTeamProfiles } from "@/app/actions/users";
+import { PageHeader } from "@/components/page-header";
 import { getSessionContext } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { EquipeAdmin } from "@/components/equipe-admin";
@@ -15,9 +16,7 @@ export default async function EquipePage() {
 
   return (
     <div>
-      <h2 className="mb-6 text-xl font-semibold text-zinc-900">
-        Gestão de equipe
-      </h2>
+      <PageHeader title="Gestão de equipe" />
       <EquipeAdmin initialProfiles={rows} currentUserId={ctx.userId} />
     </div>
   );

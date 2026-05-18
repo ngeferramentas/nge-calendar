@@ -1,4 +1,5 @@
 import { listClients } from "@/app/actions/clients";
+import { PageHeader } from "@/components/page-header";
 import { getSessionContext } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 import { ClientesAdmin } from "@/components/clientes-admin";
@@ -13,7 +14,7 @@ export default async function ClientesPage() {
 
   return (
     <div>
-      <h2 className="mb-6 text-xl font-semibold text-zinc-900">Clientes</h2>
+      <PageHeader title="Clientes" />
       <ClientesAdmin initialClients={rows} />
     </div>
   );

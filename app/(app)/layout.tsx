@@ -1,8 +1,8 @@
 import { redirect } from "next/navigation";
 import { listMyNotifications } from "@/app/actions/notifications";
 import { listCollaboratorCalendarMeta } from "@/app/actions/users";
+import { AppNotificationsProvider } from "@/components/app-notifications-provider";
 import { CollaboratorVisibilityProvider } from "@/components/collaborator-visibility-context";
-import { NotificationBell } from "@/components/notification-bell";
 import { ResponsiveAppShell } from "@/components/responsive-app-shell";
 import type { CollaboratorCalendarMeta } from "@/lib/types/database";
 import { getSessionContext } from "@/lib/auth/session";
@@ -28,24 +28,20 @@ export default async function AppLayout({
   }
 
   const shell = (
-    <ResponsiveAppShell
-      roleLabel={
-        ctx.profile.role === "admin" ? "Administrador" : "Colaborador"
-      }
-      userHeading={ctx.profile.full_name || ctx.email || "—"}
-      isAdmin={isAdmin}
-      canManage={canManage}
-      notifications={
-        <NotificationBell
-          userId={ctx.userId}
-          initialNotifications={
-            notificationsRes.ok ? notificationsRes.data ?? [] : []
-          }
-        />
+    <AppNotificationsProvider
+      userId={ctx.userId}
+      initialNotifications={
+        notificationsRes.ok ? notificationsRes.data ?? [] : []
       }
     >
-      {children}
-    </ResponsiveAppShell>
+      <ResponsiveAppShell
+        userHeading={ctx.profile.full_name || ctx.email || "—"}
+        isAdmin={isAdmin}
+        canManage={canManage}
+      >
+        {children}
+      </ResponsiveAppShell>
+    </AppNotificationsProvider>
   );
 
   if (isAdmin) {

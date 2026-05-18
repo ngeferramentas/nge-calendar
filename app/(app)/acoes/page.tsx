@@ -5,6 +5,7 @@ import {
 import { listMyNotificationsPage } from "@/app/actions/notifications";
 import { listCollaborators } from "@/app/actions/users";
 import { AcoesAdmin } from "@/components/acoes-admin";
+import { PageHeader } from "@/components/page-header";
 import { getSessionContext } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
 
@@ -25,7 +26,7 @@ export default async function AcoesPage() {
 
   return (
     <div>
-      <h2 className="mb-6 text-xl font-semibold text-zinc-900">Ações</h2>
+      <PageHeader title="Ações" />
       <AcoesAdmin
         initialPendingEvents={pendingRes.ok ? pendingRes.data ?? [] : []}
         initialPendingEditRequests={

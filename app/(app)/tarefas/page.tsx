@@ -1,5 +1,6 @@
 import { listMyTasks } from "@/app/actions/tasks";
 import { listCollaborators } from "@/app/actions/users";
+import { PageHeader } from "@/components/page-header";
 import { TarefasView } from "@/components/tarefas-view";
 import { getSessionContext } from "@/lib/auth/session";
 import { redirect } from "next/navigation";
@@ -16,7 +17,7 @@ export default async function TarefasPage() {
 
   return (
     <div>
-      <h2 className="mb-6 text-xl font-semibold text-zinc-900">Tarefas</h2>
+      <PageHeader title="Tarefas" />
       <TarefasView
         userId={ctx.userId}
         isAdmin={ctx.profile.role === "admin"}

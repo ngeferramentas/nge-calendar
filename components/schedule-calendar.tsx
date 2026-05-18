@@ -19,6 +19,7 @@ import "@schedule-x/theme-default/dist/index.css";
 /** One calendar instance: show month/week grids on small screens (phones only; see isCalendarSmall). */
 viewMonthGrid.hasSmallScreenCompat = true;
 viewWeek.hasSmallScreenCompat = true;
+import { AppNotificationsBell } from "@/components/app-notifications-provider";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   approveAndAssignEvent,
@@ -891,6 +892,9 @@ export function ScheduleCalendar({
           >
             Novo cliente
           </button>
+          <div className="flex justify-end max-md:w-full">
+            <AppNotificationsBell />
+          </div>
         </div>
       </div>
 
