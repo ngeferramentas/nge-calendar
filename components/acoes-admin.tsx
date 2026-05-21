@@ -27,6 +27,23 @@ type CollaboratorListItem = {
   calendar_color?: string;
 };
 
+function resolveAssignForEvent(
+  event: EventRow,
+  assignByEventId: Record<string, CollaboratorOption[]>,
+  collaborators: CollaboratorListItem[],
+): CollaboratorOption[] {
+  const fromState = assignByEventId[event.id];
+  if (fromState) return fromState;
+
+  const ids = getEventCollaboratorIds(event);
+  if (ids.length === 0) return [];
+
+  return ids.map((id) => {
+    const c = collaborators.find((x) => x.id === id);
+    return { id, full_name: c?.full_name ?? id };
+  });
+}
+
 function summarizeEditPayload(
   payload: EventEditRequestPayload,
   event: EventRow,
@@ -87,8 +104,6 @@ export function AcoesAdmin({
   const [savingId, setSavingId] = useState<string | null>(null);
   const [savingEditId, setSavingEditId] = useState<string | null>(null);
 
-  const defaultCollaboratorId = collaborators[0]?.id ?? "";
-
   const pendingSorted = useMemo(
     () =>
       [...pendingEvents].sort(
@@ -122,11 +137,40 @@ export function AcoesAdmin({
   }
 
   async function handleApprove(event: EventRow) {
-    const selected =
-      assignByEventId[event.id] ??
-      (defaultCollaboratorId
-        ? [{ id: defaultCollaboratorId, full_name: "" }]
-        : []);
+    const eventCollaboratorIds = getEventCollaboratorIds(event);
+    const fromState = assignByEventId[event.id];
+    const selected = resolveAssignForEvent(
+      event,
+      assignByEventId,
+      collaborators,
+    );
+    // #region agent log
+    fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Debug-Session-Id": "3d9b28",
+      },
+      body: JSON.stringify({
+        sessionId: "3d9b28",
+        runId: "post-fix",
+        hypothesisId: "A",
+        location: "acoes-admin.tsx:handleApprove",
+        message: "approve collaborator resolution",
+        data: {
+          eventId: event.id,
+          eventCollaboratorIds,
+          eventCollaboratorId: event.collaborator_id,
+          fromStateIds: fromState?.map((c) => c.id) ?? null,
+          selectedIds: selected.map((c) => c.id),
+          matchesEvent: eventCollaboratorIds.every(
+            (id, i) => selected[i]?.id === id,
+          ),
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     if (selected.length === 0) {
       alert("Selecione ao menos um colaborador.");
       return;
@@ -191,26 +235,11 @@ export function AcoesAdmin({
               </thead>
               <tbody>
                 {pendingSorted.map((event) => {
-                  const currentAssign =
-                    assignByEventId[event.id] ??
-                    (() => {
-                      const ids = getEventCollaboratorIds(event);
-                      if (ids.length > 0) {
-                        return ids.map((id) => {
-                          const c = collaborators.find((x) => x.id === id);
-                          return {
-                            id,
-                            full_name: c?.full_name ?? id,
-                          };
-                        });
-                      }
-                      const fallback = collaborators.find(
-                        (c) => c.id === defaultCollaboratorId,
-                      );
-                      return fallback
-                        ? [{ id: fallback.id, full_name: fallback.full_name }]
-                        : [];
-                    })();
+                  const currentAssign = resolveAssignForEvent(
+                    event,
+                    assignByEventId,
+                    collaborators,
+                  );
                   const primaryId = currentAssign[0]?.id;
                   const assignedProfile = collaborators.find(
                     (c) => c.id === primaryId,
@@ -234,7 +263,7 @@ export function AcoesAdmin({
                         <div className="flex items-start gap-2">
                           <span
                             className="mt-2 inline-block h-3 w-3 shrink-0 rounded-full"
-                            style={{ backgroundColor: badgeColor }}
+                            style={{ backgroundColor: badgeColor }} 
                           />
                           <CollaboratorMultiPicker
                             value={currentAssign}

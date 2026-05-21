@@ -328,6 +328,35 @@ export async function createEvent(
 
     await syncEventCollaborators(supabase, data.id, collaboratorIds);
 
+    // #region agent log
+    if (!isAdmin) {
+      await fetch(
+        "http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Debug-Session-Id": "3d9b28",
+          },
+          body: JSON.stringify({
+            sessionId: "3d9b28",
+            runId: "pre-fix",
+            hypothesisId: "B",
+            location: "events.ts:createEvent",
+            message: "collaborator created pending event",
+            data: {
+              eventId: data.id,
+              collaboratorIds,
+              collaboratorId,
+              status,
+            },
+            timestamp: Date.now(),
+          }),
+        },
+      ).catch(() => {});
+    }
+    // #endregion
+
     await appendAuditLog(supabase, {
       entityType: "event",
       entityId: data.id,
@@ -437,6 +466,34 @@ export async function approveAndAssignEvent(
     if (row.status !== "pending_approval") {
       return { ok: false, error: "Apenas eventos pendentes podem ser aprovados." };
     }
+
+    const existingCollaboratorIds = getEventCollaboratorIds(row);
+    // #region agent log
+    await fetch(
+      "http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Debug-Session-Id": "3d9b28",
+        },
+        body: JSON.stringify({
+          sessionId: "3d9b28",
+          runId: "pre-fix",
+          hypothesisId: "E",
+          location: "events.ts:approveAndAssignEvent",
+          message: "server approve payload",
+          data: {
+            eventId,
+            existingCollaboratorIds,
+            incomingCollaboratorIds: collaboratorIds,
+            rowCollaboratorId: row.collaborator_id,
+          },
+          timestamp: Date.now(),
+        }),
+      },
+    ).catch(() => {});
+    // #endregion
 
     await assertNoTimeOverlap({
       startsAt: row.starts_at,

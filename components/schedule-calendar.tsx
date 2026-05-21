@@ -722,6 +722,28 @@ export function ScheduleCalendar({
 
   async function handleApprove() {
     if (!adminOpen || assignCollaborators.length === 0) return;
+    // #region agent log
+    fetch("http://127.0.0.1:7285/ingest/5ec2dab7-dfe7-4ae0-84b8-6b4bcc309c97", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Debug-Session-Id": "3d9b28",
+      },
+      body: JSON.stringify({
+        sessionId: "3d9b28",
+        runId: "pre-fix",
+        hypothesisId: "D",
+        location: "schedule-calendar.tsx:handleApprove",
+        message: "agenda modal approve",
+        data: {
+          eventId: adminOpen.id,
+          eventCollaboratorIds: getEventCollaboratorIds(adminOpen),
+          assignIds: assignCollaborators.map((c) => c.id),
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     setSaving(true);
     const res = await approveAndAssignEvent({
       eventId: adminOpen.id,
